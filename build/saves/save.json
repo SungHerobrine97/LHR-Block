@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": 0,
-  "last_level": null,
+  "last_level": "multi_blocks",
   "levels": {
     "tutorial": {
       "cleared": false,
@@ -40,8 +40,8 @@
     },
     "multi_blocks": {
       "cleared": false,
-      "best_row": null,
-      "attempts": 0,
+      "best_row": 5,
+      "attempts": 1,
       "clears": 0,
       "best_ms": null
     }
