@@ -1,4 +1,4 @@
-"""内置编辑器：自定义舞台、玩法规则、胜利/失败条件、VFX、事件与剧本。"""
+"""内置编辑器：自定义舞台、玩法规则、形状、目标/失败条件、VFX、事件与剧本。"""
 from __future__ import annotations
 
 import copy
@@ -12,7 +12,8 @@ from . import render as R
 from . import settings as S
 from . import ui
 from .audio import Audio, BGM_LABELS, SFX_LABELS, resolve_bgm, resolve_sfx
-from .pieces import ALL_KINDS
+from .pieces import ALL_KINDS, Piece, color_of, register_shape, rotations_of, \
+    unregister_shape
 from .stage import CH_EMPTY, CH_WALL, Stage
 from .vfx import ALL_VFX, RENDER_NAME
 
@@ -22,6 +23,10 @@ PALETTE = [("空", CH_EMPTY, None), ("墙", CH_WALL, S.WALL_COLOR)] + \
 HOVER_LABELS = {"follow": "跟随小人", "manual": "玩家控制", "random": "随机落点"}
 GOAL_LABELS = {"reach_row": "抵达顶层行", "survive": "坚持时间",
                "lock_count": "承受方块数", "none": "由剧本决定"}
+
+TABS = ["基本", "玩法", "形状", "目标/失败", "VFX", "事件/剧本"]
+TAB_BASIC, TAB_PLAY, TAB_SHAPE, TAB_GOAL, TAB_VFX, TAB_EVENT = range(len(TABS))
+GRID_N = 6
 
 
 class EditorScene:
@@ -48,7 +53,10 @@ class EditorScene:
         self.message = ""
         self.message_life = 0.0
         self.event_rows = []
-        self.cur_event = "on_start"
+        self.cur_event_i = 0          # 当前编辑的事件序号
+        self.cur_shape = 0            # 当前编辑的形状序号（内置在前）
+        self.level.ensure_events_list()
+        L.register_level_shapes(self.level)
         self.scroll = 0
         self._labels: list = []
         self._build()
@@ -72,7 +80,7 @@ class EditorScene:
 
         # 右侧标签页
         r = rt["right"]
-        tabs = ["基本", "玩法", "目标/失败", "VFX", "事件/剧本"]
+        tabs = TABS
         self.tab_buttons = []
         tw = (r.w - 8) // len(tabs)
         for i, name in enumerate(tabs):
@@ -89,7 +97,11 @@ class EditorScene:
         # 顶栏：输入框按比例分配剩余宽度，按钮组固定在右侧，任何窗口宽度都不重叠
         top = rt["top"]
         gap = 6
-        btn_sizes = [76, 84, 62, 62, 64]
+        btn_sizes = [70, 76, 56, 56, 56, 58, 60]   # 保存/另存为/载入/导入/导出/试演/返回
+        need = sum(btn_sizes) + gap * (len(btn_sizes) - 1)
+        if top.width - need < 300:                 # 窄窗口：整体等比缩小按钮
+            k = max(0.68, (top.width - 300) / max(1, need))
+            btn_sizes = [max(40, int(s * k)) for s in btn_sizes]
         btn_total = sum(btn_sizes) + gap * (len(btn_sizes) - 1)
         avail = max(260, top.width - btn_total - 14)
         total = max(220, avail - 3 * gap)      # 预留 3 个间隙，避免与按钮组相撞
@@ -120,15 +132,22 @@ class EditorScene:
         self.b_load = ui.Button(pygame.Rect(bx, top.y, btn_sizes[2], 30),
                                 "载入", self.load_dialog, 12)
         bx += btn_sizes[2] + gap
-        self.b_test = ui.Button(pygame.Rect(bx, top.y, btn_sizes[3], 30),
-                                "试演", self.test, 13, "primary")
+        self.b_import = ui.Button(pygame.Rect(bx, top.y, btn_sizes[3], 30),
+                                  "导入", self.import_file, 12)
         bx += btn_sizes[3] + gap
-        self.b_back = ui.Button(pygame.Rect(bx, top.y, btn_sizes[4], 30),
+        self.b_export = ui.Button(pygame.Rect(bx, top.y, btn_sizes[4], 30),
+                                  "导出", self.export_file, 12)
+        bx += btn_sizes[4] + gap
+        self.b_test = ui.Button(pygame.Rect(bx, top.y, btn_sizes[5], 30),
+                                "试演", self.test, 13, "primary")
+        bx += btn_sizes[5] + gap
+        self.b_back = ui.Button(pygame.Rect(bx, top.y, btn_sizes[6], 30),
                                 "返回", self.back, 13, "ghost")
-        self.clicks += [self.b_save, self.b_saveas, self.b_load, self.b_test, self.b_back]
+        self.clicks += [self.b_save, self.b_saveas, self.b_load, self.b_import,
+                        self.b_export, self.b_test, self.b_back]
         self._top_widgets = [self.in_id, self.in_title, self.in_sub, self.in_author,
-                             self.b_save, self.b_saveas, self.b_load, self.b_test,
-                             self.b_back]
+                             self.b_save, self.b_saveas, self.b_load, self.b_import,
+                             self.b_export, self.b_test, self.b_back]
 
     def _set_tab(self, i):
         if self.tab == i:
@@ -152,6 +171,7 @@ class EditorScene:
         self.pool_toggles = []
         self.vfx_toggles = []
         self.event_rows = []
+        self.shape_rows = []
         d = self.level.data
         blocks = d["blocks"]
         player = d["player"]
@@ -205,6 +225,12 @@ class EditorScene:
                                     bool(blocks.get("player_rotate", True)))
             self.t_prev = ui.Toggle(row(26), "显示下一块预览",
                                     bool(blocks.get("preview", True)))
+            self.st_conc = ui.Stepper(row(26), "同时在场的方块数",
+                                      int(blocks.get("concurrent", 1) or 1),
+                                      1, 6, 1, None, "{:g}")
+            self.st_gap = ui.Stepper(row(26), "多块生成间隔（秒）",
+                                     float(blocks.get("spawn_gap", 0.35) or 0.35),
+                                     0.05, 3.0, 0.05, None, "{:.2f}")
             self.st_aimlo = ui.Stepper(row(26), "倒计时下限（秒）",
                                        float(blocks.get("aim_time", [2, 9.9])[0]),
                                        0.5, 9.9, 0.5, None, "{:.1f}")
@@ -221,17 +247,18 @@ class EditorScene:
                                       float(blocks.get("ramp", 0.985)),
                                       0.9, 1.0, 0.005, None, "{:.3f}")
             y += 8
-            self._label(cx, y, "方块池（至少保留一种）"); y += 16
+            self._label(cx, y, "方块池（至少保留一种，含自定义形状）"); y += 16
             pool = set(blocks.get("pool") or [])
             self.pool_toggles = []
             bx = cx
-            for i, k in enumerate(ALL_KINDS):
-                tw = 58
+            kinds = list(ALL_KINDS) + [str(s["id"]) for s in self.level.shapes_list()]
+            for k in kinds:
+                tw = max(58, min(140, len(str(k)) * 10 + 30))
                 if bx + tw > cx + cw:
                     bx = cx
                     y += 26
-                tg = ui.Toggle(pygame.Rect(bx, y, tw, 22), k, k in pool)
-                tg.kind_tag = k
+                tg = ui.Toggle(pygame.Rect(bx, y, tw, 22), str(k), str(k) in pool)
+                tg.kind_tag = str(k)
                 self.pool_toggles.append(tg)
                 bx += tw + 6
             y += 30
@@ -267,7 +294,52 @@ class EditorScene:
                                       self._stop_bgm, 12)
             y += 30
 
-        elif self.tab == 2:    # 目标 / 失败
+        elif self.tab == TAB_SHAPE:    # 形状
+            self._label(cx, y, "形状（内置 7 种只读，自定义可编辑）"); y += 16
+            items = self._shape_items()
+            self.shape_rows = []
+            for i, (sid, name, sub, custom) in enumerate(items):
+                rect = pygame.Rect(cx, y, cw, 24)
+                rr = ui.ListRow(rect, name, sub, (lambda k=i: self._pick_shape(k)),
+                                i == self.cur_shape, "自定义" if custom else "内置")
+                self.shape_rows.append(rr)
+                self.clicks.append(rr)
+                y += 26
+            y += 4
+            self.b_shnew = ui.Button(pygame.Rect(cx, y, 62, 26), "＋新建",
+                                     self._new_shape, 12, "primary")
+            self.b_shdup = ui.Button(pygame.Rect(cx + 68, y, 54, 26), "复制",
+                                     self._dup_shape, 12)
+            self.b_shdel = ui.Button(pygame.Rect(cx + 128, y, 54, 26), "删除",
+                                     self._del_shape, 12, "danger")
+            y += 32
+            cur = self._cur_shape_info()
+            self.in_shname = ui.TextInput(pygame.Rect(cx, y, cw, 26),
+                                          str(cur.get("name") or ""), "形状名称",
+                                          size=13, cb=self._write_shape_name)
+            self.inputs.append(self.in_shname)
+            y += 32
+            self.c_shcolor = ui.ColorChoice(pygame.Rect(cx, y, cw, 26), "颜色",
+                                            S.SHAPE_COLOR_IDS,
+                                            S.SHAPE_COLOR_IDS.index(cur["color"])
+                                            if cur["color"] in S.SHAPE_COLOR_IDS else 0,
+                                            self._write_shape_color,
+                                            S.SHAPE_COLOR_NAMES)
+            y += 32
+            self._label(cx, y, f"格子：点击切换（{GRID_N}×{GRID_N}，"
+                               f"剧本可用 drop {cur.get('id', '')} 调用）", 11, S.DIM2)
+            y += 16
+            grid_h = min(180, max(120, cw // 3))
+            self.grid = ui.GridEditor(pygame.Rect(cx, y, cw, grid_h), GRID_N, GRID_N,
+                                      cur.get("cells"), self._write_shape_cells)
+            self.grid.locked = not cur.get("custom", False)
+            y += grid_h + 6
+            y += 4
+            self._label(cx, y, "提示：形状会自动生成 4 个朝向；在「玩法」页把它勾进方块池，"
+                               "或用 drop 指令直接投放。", 11, S.DIM2)
+            y += 30
+
+        elif self.tab == TAB_GOAL:    # 目标 / 失败
             self._label(cx, y, "胜利条件"); y += 16
             keys = list(GOAL_LABELS.keys())
             self.c_goal = ui.Choice(row(28), "类型", keys,
@@ -296,7 +368,7 @@ class EditorScene:
             self._label(cx, y, "说明：勾选后才会计入失败判定；取消勾选则该情形不再终止演出。",
                         11, S.DIM2)
 
-        elif self.tab == 3:    # VFX
+        elif self.tab == TAB_VFX:    # VFX
             self._label(cx, y, "点击开关视觉特效（可在剧本中用 vfx 指令动态开关）")
             y += 20
             enabled = set(d.get("vfx") or [])
@@ -316,48 +388,86 @@ class EditorScene:
             y += 34
             self._label(cx, y, "已启用的 VFX 会写入关卡，演出一开始即生效。", 11, S.DIM2)
 
-        else:                  # 事件 / 剧本
-            self._label(cx, y, "触发时机")
+        else:                  # 事件 / 剧本（可无限增加，触发时机可自定义）
+            evs = self.level.ensure_events_list()
+            self._label(cx, y, f"事件列表（{len(evs)} 条 · 可无限增加）")
             y += 16
-            ev_rows = [
-                ("on_start", "开演时"),
-                ("on_spawn", "方块出现时"),
-                ("on_aim_end", "倒计时结束、开始下落时"),
-                ("on_lock", "方块固化后"),
-                (f"on_row:{self.row_n}", f"小人抵达第 {self.row_n} 行"),
-                ("on_win", "胜利时"),
-                ("on_lose", "失败时"),
-            ]
             self.event_rows = []
-            for key, lab in ev_rows:
-                have = bool(self.level.event(key))
-                rect = pygame.Rect(cx, y, cw, 26)
-                rr = ui.ListRow(rect, lab, "已编写剧本" if have else "空",
-                                (lambda k=key: self._pick_event(k)),
-                                key == self.cur_event, "●" if have else "")
-                rr.key = key
+            for i, ev in enumerate(evs):
+                lab = L.trigger_label(ev.get("trigger"), ev.get("param"))
+                have = bool(str(ev.get("script", "")).strip())
+                rr = ui.ListRow(pygame.Rect(cx, y, cw, 26), f"{i + 1}. {lab}",
+                                "已编写" if have else "空",
+                                (lambda k=i: self._pick_event(k)),
+                                i == self.cur_event_i, "●" if have else "")
                 self.event_rows.append(rr)
                 self.clicks.append(rr)
-                y += 30
-            if self.cur_event.startswith("on_row"):
-                self.st_row = ui.Stepper(pygame.Rect(cx, y, cw, 26),
-                                         "行号", self.row_n, 0,
-                                         max(0, d["stage"]["height"] - 1), 1,
-                                         self._set_row_event, "{:g}")
-                self.clicks.append(self.st_row)
-                y += 32
-            y += 4
-            self.c_mode = ui.Choice(pygame.Rect(cx, y, cw, 26), "演出方式",
-                                    ["ambient", "blocking"],
-                                    0 if self._ev_mode() == "ambient" else 1,
-                                    None, ["自动推进（不暂停）", "等待玩家确认"])
-            self.clicks.append(self.c_mode)
+                y += 28
+            self.b_evnew = ui.Button(pygame.Rect(cx, y, 66, 26), "＋新增",
+                                     self._new_event, 12, "primary")
+            self.b_evdup = ui.Button(pygame.Rect(cx + 72, y, 54, 26), "复制",
+                                     self._dup_event, 12)
+            self.b_evdel = ui.Button(pygame.Rect(cx + 132, y, 54, 26), "删除",
+                                     self._del_event, 12, "danger")
             y += 32
-            avail = body.bottom - y - 74
-            self.ta = ui.TextArea(pygame.Rect(cx, y, cw, max(80, avail)),
-                                  self._ev_script(), size=13)
-            self.inputs.append(self.ta)
-            y += avail + 4
+            ev = evs[self.cur_event_i] if 0 <= self.cur_event_i < len(evs) else None
+            if ev is None:
+                self._label(cx, y, "还没有事件：点「＋新增」添加一条，"
+                                   "再选触发时机并写剧本。", 12, S.DIM2)
+                y += 24
+            else:
+                trig = str(ev.get("trigger") or "on_lock")
+                idx = L.TRIGGER_KEYS.index(trig) if trig in L.TRIGGER_KEYS else 0
+                self.c_etrig = ui.Choice(row(26), "触发时机", L.TRIGGER_KEYS, idx,
+                                         self._change_trigger,
+                                         [L.trigger_name(t) for t in L.TRIGGER_KEYS])
+                kind = L.TRIGGER_KINDS.get(trig)
+                if kind == "int":
+                    unit = "秒" if trig == "on_time" else ""
+                    self.st_eparam = ui.Stepper(
+                        row(26), f"参数{f'（{unit}）' if unit else ''}",
+                        int(ev.get("param") or 0), 0,
+                        max(0, d["stage"]["height"] - 1) if trig in ("on_row", "on_height")
+                        else 600, 1, self._change_param, "{:g}")
+                elif kind == "float":
+                    self.st_eparam = ui.Stepper(row(26), "参数（秒）",
+                                                float(ev.get("param") or 0),
+                                                0, 600, 0.5, self._change_param, "{:.1f}")
+                elif kind == "shape":
+                    kinds = list(ALL_KINDS) + [str(s["id"])
+                                               for s in self.level.shapes_list()]
+                    cur = str(ev.get("param") or kinds[0])
+                    if cur not in kinds:
+                        kinds.append(cur)
+                    self.c_eparam = ui.Choice(row(26), "形状", kinds,
+                                              kinds.index(cur), self._change_param)
+                elif kind == "key":
+                    self.in_eparam = ui.TextInput(row(26),
+                                                  str(ev.get("param") or "space"),
+                                                  "按键名（如 x / space）", size=13)
+                    self.inputs.append(self.in_eparam)
+                self.t_eonce = ui.Toggle(row(24), "只触发一次",
+                                         bool(ev.get("once", True)),
+                                         self._change_once)
+                self.c_mode = ui.Choice(row(26), "演出方式", list(L.MODES),
+                                        0 if str(ev.get("mode")) == "ambient" else 1,
+                                        None, [L.MODE_LABELS[m] for m in L.MODES])
+                avail = body.bottom - y - 104
+                self.ta = ui.TextArea(pygame.Rect(cx, y, cw, max(80, avail)),
+                                      str(ev.get("script", "")), size=13)
+                self.inputs.append(self.ta)
+                y += max(80, avail) + 4
+
+            # 投放方块助手：把 drop <形状> <列> 插进当前剧本行
+            kinds = list(ALL_KINDS) + [str(s["id"]) for s in self.level.shapes_list()]
+            self.c_dkind = ui.Choice(pygame.Rect(cx, body.bottom - 94, 96, 26),
+                                     "形状", kinds, 0, None)
+            self.st_dcol = ui.Stepper(pygame.Rect(cx + 102, body.bottom - 94, 90, 26),
+                                      "列", 0, 0, max(0, d["stage"]["width"] - 1), 1,
+                                      None, "{:g}")
+            self.b_drop = ui.Button(pygame.Rect(cx + 198, body.bottom - 94, 76, 26),
+                                    "插 drop", self._ins_drop, 12)
+            self.clicks += [self.c_dkind, self.st_dcol, self.b_drop]
 
             # 音效 / 音乐插入助手
             sfx_names = Audio.list_sfx() + Audio.list_files()
@@ -387,9 +497,10 @@ class EditorScene:
             if hasattr(obj, "handle_click") and hasattr(obj, "draw") \
                     and obj not in self.clicks and not isinstance(obj, (list, tuple)):
                 if isinstance(obj, (ui.Button, ui.Toggle, ui.Choice, ui.Stepper,
-                                    ui.ListRow)):
+                                    ui.ListRow, ui.GridEditor, ui.ColorChoice)):
                     self.clicks.append(obj)
-        for tg in getattr(self, "pool_toggles", []) + getattr(self, "vfx_toggles", []):
+        for tg in getattr(self, "pool_toggles", []) + getattr(self, "vfx_toggles", []) \
+                + getattr(self, "shape_rows", []):
             if tg not in self.clicks:
                 self.clicks.append(tg)
 
@@ -439,37 +550,220 @@ class EditorScene:
     def _label(self, x, y, s, size=12, color=S.DIM2):
         self._labels.append(ui.Label(pygame.Rect(x, y, 10, 10), s, size, color))
 
-    def _ev_script(self) -> str:
-        v = self.level.event(self.cur_event)
-        if isinstance(v, str):
-            return v
-        if isinstance(v, dict):
-            if "story" in v:
-                return L.load_story(str(v["story"]))
-            return v.get("script", "")
-        return ""
+    # ============================================================ 形状
+    def _shapes(self) -> list:
+        return self.level.data.setdefault("shapes", [])
 
-    def _ev_mode(self) -> str:
-        v = self.level.event(self.cur_event)
-        if isinstance(v, dict):
-            return v.get("mode", "blocking" if self.cur_event == "on_start" else "ambient")
-        return "blocking" if self.cur_event == "on_start" else "ambient"
+    def _shape_items(self):
+        """[(id, 列表标题, 副标题, 是否自定义)]：内置 7 种在前，自定义在后。"""
+        out = []
+        for k in ALL_KINDS:
+            out.append((k, k, f"{len(rotations_of(k)[0])} 格 · 内置", False))
+        for sh in self._shapes():
+            n = L.normalize_shape(sh)
+            if not n:
+                continue
+            out.append((n["id"], f"{n['name']}（{n['id']}）",
+                        f"{len(n['cells'])} 格 · 色 {n['color']}", True))
+        return out
 
-    def _pick_event(self, key):
-        if key.startswith("on_row"):
-            self.cur_event = f"on_row:{self.row_n}"
+    def _cur_shape(self):
+        items = self._shape_items()
+        if not items:
+            return None
+        self.cur_shape = max(0, min(len(items) - 1, self.cur_shape))
+        return items[self.cur_shape]
+
+    def _cur_shape_info(self) -> dict:
+        info = {"id": "", "name": "", "color": 1, "cells": [], "custom": False}
+        cur = self._cur_shape()
+        if not cur:
+            return info
+        sid, _name, _sub, custom = cur
+        info["id"] = sid
+        info["custom"] = custom
+        if custom:
+            for sh in self._shapes():
+                n = L.normalize_shape(sh)
+                if n and n["id"] == sid:
+                    info["name"] = n["name"]
+                    info["color"] = n["color"]
+                    info["cells"] = [tuple(c) for c in n["cells"]]
+                    break
         else:
-            self.cur_event = key
+            info["name"] = sid
+            info["color"] = color_of(sid)
+            info["cells"] = rotations_of(sid)[0]
+        return info
+
+    def _uniq_shape_id(self) -> str:
+        have = {str(s.get("id")) for s in self._shapes()} | set(ALL_KINDS)
+        n = 1
+        while f"sh{n}" in have:
+            n += 1
+        return f"sh{n}"
+
+    def _patch_shape(self, sid, cells=None, name=None, color=None) -> bool:
+        for sh in self._shapes():
+            if str(sh.get("id")) != sid:
+                continue
+            if cells is not None:
+                cells = [(int(x), int(y)) for x, y in cells] or [(0, 0)]
+                sh["cells"] = [[x, y] for x, y in cells]
+            if name is not None:
+                sh["name"] = str(name)
+            if color is not None:
+                sh["color"] = int(color)
+            n = L.normalize_shape(sh)
+            if n:
+                register_shape(n["id"], [tuple(c) for c in n["cells"]],
+                               n["color"], n["name"])
+            return True
+        return False
+
+    def _write_shape_cells(self, cells):
+        cur = self._cur_shape()
+        if cur and cur[3]:
+            self._patch_shape(cur[0], cells=cells)
+
+    def _write_shape_name(self, value):
+        cur = self._cur_shape()
+        if cur and cur[3]:
+            self._patch_shape(cur[0], name=value)
+
+    def _write_shape_color(self, value):
+        cur = self._cur_shape()
+        if cur and cur[3]:
+            self._patch_shape(cur[0], color=value)
+
+    def _pick_shape(self, i):
+        self._sync()
+        self.cur_shape = i
         self._build()
 
-    def _set_row_event(self, v):
-        old = self.cur_event
-        self.row_n = int(v)
-        old_val = self.level.data["events"].pop(old, None)
-        self.cur_event = f"on_row:{self.row_n}"
-        if old_val is not None:
-            self.level.data["events"][self.cur_event] = old_val
+    def _new_shape(self):
+        sid = self._uniq_shape_id()
+        self._shapes().append({"id": sid, "name": "新形状", "color": 8,
+                               "cells": [[0, 0], [1, 0]]})
+        register_shape(sid, [(0, 0), (1, 0)], 8, "新形状")
+        self.cur_shape = len(self._shape_items()) - 1
         self._build()
+        self._flash(f"已新建形状 {sid}")
+
+    def _dup_shape(self):
+        info = self._cur_shape_info()
+        if not info["id"]:
+            return
+        sid = self._uniq_shape_id()
+        cells = info["cells"] or [(0, 0)]
+        name = f"{info['name'] or info['id']} 副本"
+        self._shapes().append({"id": sid, "name": name, "color": info["color"],
+                               "cells": [[int(x), int(y)] for x, y in cells]})
+        register_shape(sid, cells, info["color"], name)
+        self.cur_shape = len(self._shape_items()) - 1
+        self._build()
+        self._flash(f"已复制为 {sid}")
+
+    def _del_shape(self):
+        cur = self._cur_shape()
+        if not cur:
+            return
+        sid, _n, _s, custom = cur
+        if not custom:
+            self._flash("内置形状不可删除，可先「复制」再改")
+            return
+        self._shapes()[:] = [s for s in self._shapes() if str(s.get("id")) != sid]
+        unregister_shape(sid)
+        self.cur_shape = max(0, min(self.cur_shape, len(self._shape_items()) - 1))
+        self._build()
+        self._flash(f"已删除形状 {sid}")
+
+    # ============================================================ 事件
+    def _events(self) -> list:
+        return self.level.ensure_events_list()
+
+    def _pick_event(self, i):
+        self._sync_event()
+        self.cur_event_i = int(i)
+        self._build()
+
+    def _new_event(self):
+        self._sync_event()
+        evs = self._events()
+        evs.append({"trigger": "on_lock", "param": None, "script": "",
+                    "mode": "ambient", "once": True})
+        self.cur_event_i = len(evs) - 1
+        self._build()
+        self._flash(f"已新增第 {len(evs)} 条事件")
+
+    def _dup_event(self):
+        self._sync_event()
+        evs = self._events()
+        if not (0 <= self.cur_event_i < len(evs)):
+            return
+        evs.append(copy.deepcopy(evs[self.cur_event_i]))
+        self.cur_event_i = len(evs) - 1
+        self._build()
+        self._flash("已复制当前事件")
+
+    def _del_event(self):
+        evs = self._events()
+        if not (0 <= self.cur_event_i < len(evs)):
+            return
+        evs.pop(self.cur_event_i)
+        self.cur_event_i = max(0, min(self.cur_event_i, len(evs) - 1))
+        self._build()
+        self._flash("已删除该事件")
+
+    def _change_trigger(self, value):
+        self._sync_event()
+        evs = self._events()
+        if not (0 <= self.cur_event_i < len(evs)):
+            return
+        ev = evs[self.cur_event_i]
+        ev["trigger"] = value
+        kind = L.TRIGGER_KINDS.get(value)
+        if kind == "int":
+            ev["param"] = 0 if value in ("on_row", "on_height") else 1
+        elif kind == "float":
+            ev["param"] = 5.0
+        elif kind == "shape":
+            ev["param"] = "O"
+        elif kind == "key":
+            ev["param"] = "space"
+        else:
+            ev["param"] = None
+        self._build()
+
+    def _change_param(self, value):
+        evs = self._events()
+        if 0 <= self.cur_event_i < len(evs):
+            evs[self.cur_event_i]["param"] = value
+
+    def _change_once(self, value):
+        evs = self._events()
+        if 0 <= self.cur_event_i < len(evs):
+            evs[self.cur_event_i]["once"] = bool(value)
+
+    def _sync_event(self):
+        evs = self._events()
+        if not (0 <= self.cur_event_i < len(evs)):
+            return
+        ev = evs[self.cur_event_i]
+        if hasattr(self, "c_etrig"):
+            ev["trigger"] = self.c_etrig.value
+        if hasattr(self, "st_eparam"):
+            ev["param"] = self.st_eparam.value
+        if hasattr(self, "c_eparam"):
+            ev["param"] = self.c_eparam.value
+        if hasattr(self, "in_eparam"):
+            ev["param"] = (self.in_eparam.value.strip() or "space").lower()
+        if hasattr(self, "t_eonce"):
+            ev["once"] = bool(self.t_eonce.value)
+        if hasattr(self, "c_mode"):
+            ev["mode"] = self.c_mode.value
+        if hasattr(self, "ta"):
+            ev["script"] = self.ta.get()
 
     def _set_spawn(self, v):
         self.spawn_col = int(v)
@@ -556,6 +850,13 @@ class EditorScene:
         if name:
             self._insert_cmd("bgm " + name.value)
 
+    def _ins_drop(self):
+        kind = getattr(self, "c_dkind", None)
+        col = getattr(self, "st_dcol", None)
+        if kind is None or col is None:
+            return
+        self._insert_cmd(f"drop {kind.value} {int(col.value)}")
+
     def _load_story(self):
         path = self.c_story.value
         text = L.load_story(os.path.splitext(path)[0])
@@ -589,8 +890,12 @@ class EditorScene:
             b["hover"] = self.c_hover.value
             b["allow_rotation"] = self.t_rot.value
             b["player_rotate"] = self.t_prot.value \
-                if hasattr(self, "t_prot") else bool(blocks.get("player_rotate", True))
+                if hasattr(self, "t_prot") else bool(b.get("player_rotate", True))
             b["preview"] = self.t_prev.value
+            b["concurrent"] = int(getattr(self, "st_conc").value) \
+                if hasattr(self, "st_conc") else int(b.get("concurrent", 1))
+            b["spawn_gap"] = float(getattr(self, "st_gap").value) \
+                if hasattr(self, "st_gap") else float(b.get("spawn_gap", 0.35))
             b["aim_time"] = [min(self.st_aimlo.value, self.st_aimhi.value),
                              max(self.st_aimlo.value, self.st_aimhi.value)]
             b["fall_interval"] = self.st_fall.value
@@ -613,7 +918,13 @@ class EditorScene:
                           "volume": int(getattr(self, "st_vol").value)
                           if hasattr(self, "st_vol") else int(cur.get("volume", 100))}
 
-        elif self.tab == 2:
+        elif self.tab == TAB_SHAPE:
+            if hasattr(self, "in_shname"):
+                self._write_shape_name(self.in_shname.value)
+            if hasattr(self, "c_shcolor"):
+                self._write_shape_color(self.c_shcolor.value)
+
+        elif self.tab == TAB_GOAL:
             d["goal"]["type"] = self.c_goal.value
             d["goal"]["row"] = int(self.st_grow.value)
             d["goal"]["seconds"] = int(self.st_gsec.value)
@@ -624,16 +935,11 @@ class EditorScene:
             f["stuck"] = self.t_stuck.value
             f["overflow"] = self.t_over.value
 
-        elif self.tab == 3:
+        elif self.tab == TAB_VFX:
             d["vfx"] = [tg.vfx_name for tg in self.vfx_toggles if tg.value]
 
-        else:
-            txt = self.ta.get()
-            if txt.strip():
-                self.level.data["events"][self.cur_event] = {
-                    "script": txt, "mode": self.c_mode.value}
-            else:
-                self.level.data["events"].pop(self.cur_event, None)
+        else:                                   # 事件 / 剧本
+            self._sync_event()
 
     # ============================================================ 存档操作
     def save(self):
@@ -662,8 +968,7 @@ class EditorScene:
         self._flash(f"已另存为 {fn}")
 
     def load_dialog(self):
-        # 简易载入：切换到菜单刷新即可；这里直接读取最近关卡列表首项之外，
-        # 提供一个在当前编辑器中载入其它关卡的快捷入口。
+        """载入：循环切换到 content/levels 里的下一份演出。"""
         levels = L.list_levels()
         idx = 0
         for i, lv in enumerate(levels):
@@ -671,17 +976,100 @@ class EditorScene:
                 idx = i
         nxt = levels[(idx + 1) % len(levels)] if levels else None
         if nxt:
-            self.level = L.Level(copy.deepcopy(nxt.data), nxt.path)
-            self.stage = Stage(self.level.width, self.level.height)
-            rows = self.level.get("terrain") or []
-            if rows:
-                self.stage.load_rows(rows)
-            self.spawn_col = self.level["player"].get("spawn_col")
-            if self.spawn_col is None:
-                self.spawn_col = self.stage.w // 2
-            self.row_n = max(0, self.level.goal_row + 1)
-            self._build()
+            self._load_level_obj(L.Level(copy.deepcopy(nxt.data), nxt.path))
             self._flash(f"已载入 {self.level.title}")
+
+    def _load_level_obj(self, lv: L.Level) -> None:
+        lv.ensure_events_list()
+        L.register_level_shapes(lv)
+        self.level = lv
+        self.stage = Stage(self.level.width, self.level.height)
+        rows = self.level.get("terrain") or []
+        if rows:
+            self.stage.load_rows(rows)
+        self.spawn_col = self.level["player"].get("spawn_col")
+        if self.spawn_col is None:
+            self.spawn_col = self.stage.w // 2
+        self.row_n = max(0, self.level.goal_row + 1)
+        self.cur_shape = 0
+        self.cur_event_i = 0
+        self.scroll = 0
+        self._build()
+
+    # -------------------------------------------------- 导入 / 导出
+    @staticmethod
+    def _file_dialog(save: bool = False, default_name: str = "") -> str:
+        """用系统文件对话框选路径；不可用时返回空串（调用方走降级方案）。"""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                root.attributes("-topmost", True)
+            except Exception:      # noqa: BLE001
+                pass
+            root.update()
+            kw = {"initialdir": S.LEVELS_DIR,
+                  "filetypes": [("演出文件", "*.json"), ("所有文件", "*.*")]}
+            if save:
+                path = filedialog.asksaveasfilename(
+                    title="导出演出", initialfile=default_name,
+                    defaultextension=".json", **kw)
+            else:
+                path = filedialog.askopenfilename(title="导入演出", **kw)
+            try:
+                root.destroy()
+            except Exception:      # noqa: BLE001
+                pass
+            return str(path or "")
+        except Exception:          # noqa: BLE001
+            return ""
+
+    @staticmethod
+    def _exchange_dir(name: str) -> str:
+        d = os.path.join(S.ROOT, name)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def import_file(self):
+        self._sync()
+        path = self._file_dialog(False)
+        if not path:
+            self._flash("未选择文件，改为从 import 目录读取")
+            path = self._latest_in_dir(self._exchange_dir("import"))
+        if not path:
+            self._flash("没有可导入的文件（把 .json 放进 build/import 即可）")
+            return
+        lv = L.import_level(path)
+        if lv is None:
+            self._flash("导入失败：不是有效的演出 JSON")
+            return
+        self._load_level_obj(lv)
+        self._flash(f"已导入 {lv.title}")
+
+    def export_file(self):
+        self._sync()
+        name = L.safe_name(self.level.id) + ".json"
+        path = self._file_dialog(True, name)
+        if not path:
+            path = os.path.join(self._exchange_dir("export"), name)
+            self._flash("未选择路径，已导出到 build/export")
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        ok = L.export_level(self.level, path)
+        self._flash("已导出：" + path if ok else "导出失败")
+
+    @staticmethod
+    def _latest_in_dir(d: str) -> str:
+        try:
+            fs = [os.path.join(d, f) for f in os.listdir(d)
+                  if f.lower().endswith(".json")]
+            if not fs:
+                return ""
+            return max(fs, key=os.path.getmtime)
+        except OSError:
+            return ""
 
     def test(self):
         self._sync()
@@ -773,7 +1161,7 @@ class EditorScene:
                 self.back()
                 return
             if ev.key == pygame.K_TAB:
-                self._set_tab((self.tab + 1) % 5)
+                self._set_tab((self.tab + 1) % len(TABS))
                 return
             if ev.key == pygame.K_F1:
                 self.focus = None
@@ -869,7 +1257,8 @@ class EditorScene:
         # 顶部
         for wi in (self.in_id, self.in_title, self.in_sub, self.in_author):
             wi.draw(surf, mouse)
-        for b in (self.b_save, self.b_saveas, self.b_load, self.b_test, self.b_back):
+        for b in (self.b_save, self.b_saveas, self.b_load, self.b_import,
+                  self.b_export, self.b_test, self.b_back):
             b.draw(surf, mouse)
         S.draw_text(surf, "演出编辑器", (rt["top"].x - 2, 6), 13, S.DIM2, True)
 

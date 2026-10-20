@@ -8,7 +8,7 @@ import pygame
 from . import settings as S
 from .actor import H as AH
 from .actor import W as AW
-from .pieces import ROTATIONS, SHAPE_DEFS
+from .pieces import color_of, rotations_of
 from .stage import EMPTY, WALL
 
 TOP_ROWS = 3          # 舞台上方预留给「待落方块」的空间（单位：行）
@@ -106,23 +106,36 @@ def draw_stage_blocks(surf, core, view, cell, t):
 
 
 # ---------------------------------------------------------------- 落点预览 / 当前块
-def piece_visual_row(core):
-    p = core.piece
+def active_pieces(core):
+    """舞台上所有正在瞄准 / 下落的方块（兼容只有 piece 的旧对象）。"""
+    ps = getattr(core, "pieces", None)
+    if ps is None:
+        p = getattr(core, "piece", None)
+        return [p] if p is not None else []
+    return list(ps)
+
+
+def piece_visual_row(core, p=None):
+    p = p if p is not None else getattr(core, "piece", None)
     if p is None:
         return None
-    if core.phase == "fall" and p.interval > 0:
+    if getattr(p, "phase", "aim") == "fall" and p.interval > 0:
         return p.row - 1 + max(0.0, min(1.0, p.fall_t / p.interval))
     return float(p.row)
 
 
 def draw_ghost(surf, core, view, cell, t):
-    p = core.piece
+    pulse = 0.35 + 0.2 * math.sin(t * 4.5)
+    for p in active_pieces(core):
+        _draw_ghost_one(surf, core, view, cell, p, pulse)
+
+
+def _draw_ghost_one(surf, core, view, cell, p, pulse):
     if p is None:
         return
     land = core.stage.drop_row(p, p.row)
     if land < 0:
         return
-    pulse = 0.35 + 0.2 * math.sin(t * 4.5)
     for c, r in p.cells(None, land):
         if r < 0:
             continue
@@ -141,14 +154,19 @@ def draw_ghost(surf, core, view, cell, t):
 
 
 def draw_piece(surf, core, view, cell, t):
-    p = core.piece
+    for p in active_pieces(core):
+        _draw_piece_one(surf, core, view, cell, t, p)
+
+
+def _draw_piece_one(surf, core, view, cell, t, p):
     if p is None:
         return
-    vy = piece_visual_row(core)
+    vy = piece_visual_row(core, p)
     if vy is None:
         return
     off = (vy - p.row) * cell
-    shining = core.phase == "aim" and core.aim_t < 1.2
+    shining = getattr(p, "phase", "aim") == "aim" and \
+        getattr(p, "aim_t", 99) < 1.2
     for c, r in p.cells():
         rect = _tile_rect(view, cell, c, r)
         rect.y += int(off)
@@ -163,10 +181,11 @@ def draw_piece(surf, core, view, cell, t):
 
 
 def draw_aim_meter(surf, core, view, cell, t):
-    p = core.piece
-    if p is None or core.phase != "aim":
+    p = getattr(core, "aiming", None) or getattr(core, "piece", None)
+    if p is None or getattr(p, "phase", "aim") != "aim":
         return
-    k = max(0.0, min(1.0, core.aim_t / max(core.aim_total, 0.001)))
+    k = max(0.0, min(1.0, getattr(p, "aim_t", 0.0)
+                     / max(getattr(p, "aim_total", 1.0), 0.001)))
     x0 = view.x + p.col * cell
     w = max(cell, p.width * cell)
     y = view.y - int(cell * 0.55)
@@ -175,7 +194,8 @@ def draw_aim_meter(surf, core, view, cell, t):
     remain = S.mix(S.GOOD, S.BAD, 1.0 - k)
     S.round_rect(surf, pygame.Rect(x0, y, int(w * k), max(4, int(cell * 0.16))),
                  remain, max(2, int(cell * 0.08)))
-    txt = S.text(f"{core.aim_t:.1f}s", max(10, int(cell * 0.42)), remain, True)
+    txt = S.text(f"{getattr(p, 'aim_t', 0.0):.1f}s",
+                 max(10, int(cell * 0.42)), remain, True)
     surf.blit(txt, (x0 + w + 6, y - 4))
 
 
@@ -242,8 +262,8 @@ def draw_next(surf, core, rect):
     S.panel(surf, rect, S.PANEL, S.LINE, 8)
     S.draw_text(surf, "下一块", (rect.x + 10, rect.y + 6), 12, S.DIM)
     kind = core.bag.peek()
-    cells = ROTATIONS[kind][0]
-    color = SHAPE_DEFS[kind]["color"]
+    cells = rotations_of(kind)[0]
+    color = color_of(kind)
     maxx = max(x for x, _ in cells) + 1
     maxy = max(y for _, y in cells) + 1
     size = min((rect.w - 24) // maxx, (rect.h - 34) // maxy)

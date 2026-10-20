@@ -12,9 +12,9 @@ from typing import Dict, List, Optional, Set, Tuple
 from . import level as L
 from .actor import Actor
 from .audio import resolve_bgm, resolve_sfx
-from .pieces import Bag, Piece
+from .pieces import Bag, Piece, is_known, rotations_of
 from .save import SaveData
-from .scriptvm import Runner, Stmt
+from .scriptvm import Runner, Stmt, split_args
 from .stage import Stage
 from .vfx import VFXManager
 
@@ -67,6 +67,9 @@ class Core:
 
     # ================================================== 生命周期
     def reset(self) -> None:
+        # 关卡自带的自定义形状先注册进形状表，方块池 / drop 指令才能引用
+        L.register_level_shapes(self.level)
+        self.events: List[dict] = self.level.events_list()
         self.stage.clear()
         terrain = self.level.get("terrain") or []
         if terrain:
@@ -78,18 +81,14 @@ class Core:
         self.actor.reset(col, self.stage.h - 1)
         self.actor.snap_to_free(col, self.stage.h - 1)
 
-        self.piece: Optional[Piece] = None
-        self.phase = AIM
-        self.aim_t = 0.0
-        self.aim_total = 1.0
+        self.pieces: List[Piece] = []      # 舞台里同时存在的方块（可多块）
         self.spawn_delay = 0.28
-        self.aim_col = float(col)
         self.elapsed = 0.0
         self.lock_count = 0
         self.result: Optional[dict] = None
         self.fired: Set[str] = set()
         self.drop_queue = 0
-        self.instant = False
+        self.forced: List[dict] = []      # 剧本指定的下落方块队列
         self.cur_interval = float(
             (self.level["blocks"].get("fall_interval") or 0.30))
         self.best_row = self.actor.top_row
@@ -121,29 +120,106 @@ class Core:
         if st is not None:
             self.best_row = min(self.best_row, self.actor.top_row)
 
+    # -------------------------------------------------- 多块视图
+    @property
+    def aiming(self) -> Optional[Piece]:
+        """最近生成、正在瞄准的那块：它跟随玩家、可被旋转，倒计时条也显示它。"""
+        for p in reversed(self.pieces):
+            if getattr(p, "phase", AIM) == AIM:
+                return p
+        return None
+
+    @property
+    def piece(self) -> Optional[Piece]:
+        """主控方块：优先正在瞄准的那块，否则取最新开始下落的那块。"""
+        a = self.aiming
+        if a is not None:
+            return a
+        return self.pieces[-1] if self.pieces else None
+
+    @property
+    def phase(self) -> str:
+        p = self.piece
+        return getattr(p, "phase", OVER) if p is not None else OVER
+
+    @property
+    def aim_t(self) -> float:
+        p = self.aiming
+        return float(getattr(p, "aim_t", 0.0)) if p is not None else 0.0
+
+    @aim_t.setter
+    def aim_t(self, value: float) -> None:
+        p = self.aiming or self.piece
+        if p is not None:
+            p.aim_t = float(value)
+
+    @property
+    def aim_total(self) -> float:
+        p = self.aiming
+        return float(getattr(p, "aim_total", 1.0)) if p is not None else 1.0
+
+    @property
+    def aim_col(self) -> float:
+        p = self.aiming
+        return float(getattr(p, "aim_col", 0.0)) if p is not None else 0.0
+
+    @aim_col.setter
+    def aim_col(self, value: float) -> None:
+        p = self.aiming or self.piece
+        if p is not None:
+            p.aim_col = float(value)
+
+    # -------------------------------------------------- 生成节奏
+    def concurrent(self) -> int:
+        """舞台里允许同时存在的方块数（1 = 经典的一块一块来）。"""
+        try:
+            n = int(self.level["blocks"].get("concurrent", 1) or 1)
+        except (TypeError, ValueError):
+            n = 1
+        return max(1, min(8, n))
+
+    def spawn_gap(self) -> float:
+        """多块模式下，两块之间的最小生成间隔（秒）。"""
+        try:
+            v = float(self.level["blocks"].get("spawn_gap", 0.35))
+        except (TypeError, ValueError):
+            v = 0.35
+        return max(0.05, min(5.0, v))
+
     def _update_world(self, dt: float, inp: Dict[str, bool]) -> None:
         if self.result:
             return
-        self._check_row_events()
+        self._check_triggers()
 
-        if self.piece is None:
-            self.spawn_delay -= dt
-            if self.drop_queue > 0:
-                self.drop_queue -= 1
-                self._spawn(instant=True)
-            elif self.spawn_delay <= 0:
-                self._spawn()
-        else:
-            # 旋转（上升沿，按住只转一次）：瞄准与下落中皆可，
-            # 一旦锁定进舞台（phase == OVER）就再也不能改变。
-            want_rot = bool(inp.get("rotate"))
-            if want_rot and not self._rot_latch:
-                self._try_rotate(1)
-            self._rot_latch = want_rot
-            if self.phase == AIM:
-                self._update_aim(dt, inp)
-            elif self.phase == FALL:
-                self._update_fall(dt)
+        # 剧本投放的方块优先补位（不受生成间隔限制）
+        guard = 0
+        while self.drop_queue > 0 and len(self.pieces) < self.concurrent() \
+                and guard < 8:
+            guard += 1
+            self.drop_queue -= 1
+            self._spawn(instant=True)
+        # 常规节奏：只要还没到上限，冷却结束就补一块
+        self.spawn_delay -= dt
+        if len(self.pieces) < self.concurrent() and self.spawn_delay <= 0:
+            if self._spawn():
+                self.spawn_delay = self.spawn_gap()
+
+        # 旋转（上升沿，按住只转一次）：瞄准与下落中皆可，
+        # 一旦锁定进舞台就再也不能改变。
+        want_rot = bool(inp.get("rotate"))
+        if want_rot and not self._rot_latch:
+            self._try_rotate(1)
+        self._rot_latch = want_rot
+
+        for p in list(self.pieces):
+            if p not in self.pieces:
+                continue
+            if getattr(p, "phase", AIM) == AIM:
+                self._update_aim(p, dt, inp)
+            elif p.phase == FALL:
+                self._update_fall(p, dt)
+            if self.result:
+                return
 
         # 跳跃音效（上升沿触发）
         jump = bool(inp.get("jump"))
@@ -163,62 +239,102 @@ class Core:
         self._check_win()
 
     # ================================================== 方块
-    def _spawn(self, instant: bool = False) -> None:
+    def _spawn(self, instant: bool = False) -> bool:
         blk = self.level["blocks"]
-        kind = self.bag.next()
-        nrot = len(self.__class__._rots(kind))
-        rot = self.rng.randrange(nrot) if blk.get("allow_rotation", True) else 0
+        # 剧本指定的方块（drop 指令）优先于随机袋
+        forced = self.forced.pop(0) if self.forced else None
+        kind = None
+        if forced and forced.get("kind") and is_known(forced["kind"]):
+            kind = str(forced["kind"])
+        if kind is None:
+            kind = self.bag.next()
+        nrot = len(rotations_of(kind))
+        rot = 0
+        if forced and forced.get("rot") is not None:
+            try:
+                rot = int(forced["rot"]) % nrot
+            except (TypeError, ValueError):
+                rot = 0
+        elif blk.get("allow_rotation", True):
+            rot = self.rng.randrange(nrot)
         p = Piece(kind, rot)
         pw = p.width
         col = max(0, min(self.stage.w - pw, self.actor.col - (pw - 1) // 2))
+        if forced and forced.get("col") is not None:
+            fc = forced["col"]
+            if isinstance(fc, str):
+                low = fc.lower()
+                if low in ("player", "me", "center", "self"):
+                    col = max(0, min(self.stage.w - pw,
+                                     self.actor.col - (pw - 1) // 2))
+                elif low in ("random", "rnd", "any"):
+                    col = self.rng.randrange(0, max(1, self.stage.w - pw + 1))
+            else:
+                try:
+                    col = max(0, min(self.stage.w - pw, int(fc)))
+                except (TypeError, ValueError):
+                    pass
         p.col = col
         p.row = -p.height
         p.interval = self.fall_interval()
-        self.piece = p
-        self.aim_col = float(col)
-
+        p.phase = AIM
+        p.instant = bool(instant)
+        p.aim_col = float(col)
         lo, hi = self._aim_range()
-        self.aim_total = self.rng.uniform(lo, hi)
-        self.aim_t = self.aim_total
-        self.phase = AIM
-        self.instant = instant
+        p.aim_total = self.rng.uniform(lo, hi)
+        p.aim_t = p.aim_total
+        p.fall_t = 0.0
+        self.pieces.append(p)
 
-        self._place_at_spawn()
-        if self.piece is None:
-            return
-        self._fire_event("on_spawn")
+        if not self._place_at_spawn(p):
+            return False
+        self._trigger_events("on_spawn", kind)
+        self._trigger_events("on_piece", kind)
+        return True
 
-    def _place_at_spawn(self) -> None:
+    def _fits_active(self, p: Piece, col=None, row=None, rot=None) -> bool:
+        """既不与地形冲突，也不与其它正在舞台上的方块重叠。"""
+        if not self.stage.fits(p, col, row, rot):
+            return False
+        cells = set(p.cells(col, row, rot))
+        for q in self.pieces:
+            if q is p:
+                continue
+            if cells & set(q.cells()):
+                return False
+        return True
+
+    def _place_at_spawn(self, p: Piece) -> bool:
         """首选列放不下时，向两侧寻找最近的可容纳位置；无处可落则按 overflow 设定处理。"""
-        p = self.piece
         if p is None:
-            return
-        if self.stage.fits(p, None, p.row):
-            return
+            return False
+        if self._fits_active(p, None, p.row):
+            return True
         found = None
         for d in range(1, self.stage.w):
             for cand in (p.col - d, p.col + d):
                 if 0 <= cand <= self.stage.w - p.width and \
-                        self.stage.fits(p, cand, p.row):
+                        self._fits_active(p, cand, p.row):
                     found = cand
                     break
             if found is not None:
                 break
         if found is not None:
             p.col = found
-            self.aim_col = float(found)
-            return
+            p.aim_col = float(found)
+            return True
         # 舞台已被塞满
+        if p in self.pieces:
+            self.pieces.remove(p)
         if self.level["fail"].get("overflow", False):
             self._fail("overflow")
         else:
-            self.piece = None
             self.spawn_delay = 0.9
+        return False
 
     @staticmethod
     def _rots(kind):
-        from .pieces import ROTATIONS
-        return ROTATIONS[kind]
+        return rotations_of(kind)
 
     # ================================================== 旋转
     @property
@@ -229,12 +345,12 @@ class Core:
                 and bool(self.level["blocks"].get("player_rotate", True)))
 
     def _try_rotate(self, delta: int = 1) -> bool:
-        """旋转当前方块：底边对齐 + 踢墙（左右 / 上移）找合法落位。
+        """旋转主控方块：底边对齐 + 踢墙（左右 / 上移）找合法落位。
 
         找不到合法位置就放弃本次旋转，方块保持原样。
         """
         p = self.piece
-        if p is None or self.phase == OVER or self.result:
+        if p is None or self.result:
             return False
         if not self.level["blocks"].get("player_rotate", True):
             return False
@@ -250,17 +366,17 @@ class Core:
         for dr in (0, -1, 1, -2):
             for dc in (0, -1, 1, -2, 2):
                 col, row = p.col + dc, base_row + dr
-                if self.stage.fits(p, col, row, nrot):
+                if self._fits_active(p, col, row, nrot):
                     p.rot = nrot
                     p.col = col
                     p.row = row
                     wmax = max(0, self.stage.w - p.width)
-                    self.aim_col = float(max(0, min(wmax, col)))
+                    p.aim_col = float(max(0, min(wmax, col)))
                     self.rotations += 1
                     if self.audio:
                         self.audio.rotate()
                     # 旋转后若正好罩住小人，等同于被砸中
-                    if self.phase == FALL:
+                    if p.phase == FALL:
                         self._collide_piece_actor()
                     return True
         if self.audio:
@@ -279,15 +395,17 @@ class Core:
         return max(float(self.level["blocks"].get("fall_interval_min", 0.10)),
                    self.cur_interval)
 
-    def _update_aim(self, dt: float, inp: Dict[str, bool]) -> None:
+    def _update_aim(self, p: Piece, dt: float, inp: Dict[str, bool]) -> None:
         # 剧本指令 drop 要求的「立即下落」：直接跳过倒计时
-        if self.instant:
-            self._begin_fall()
+        if p.instant:
+            self._begin_fall(p)
             return
         blk = self.level["blocks"]
         mode = blk.get("hover", "follow")
-        p = self.piece
         wmax = self.stage.w - p.width
+        if p is not self.aiming:
+            # 多块模式下，只有最新那块跟随玩家；先出现的块停在原列继续倒计时
+            mode = "hold"
         if mode == "manual":
             self._repeat = getattr(self, "_repeat", 0.0)
             self._repeat -= dt
@@ -297,40 +415,36 @@ class Core:
                     step = -1
                 elif inp.get("pright"):
                     step = 1
-                if step and not inp.get("left") and not inp.get("right"):
-                    pass
                 if step:
-                    self.aim_col = max(0, min(wmax, self.aim_col + step))
+                    p.aim_col = max(0, min(wmax, p.aim_col + step))
                     self._repeat = 0.10
-        elif mode == "random":
-            pass  # 生成时已随机
+        elif mode in ("random", "hold"):
+            pass  # 生成时已随机 / 保持在原来的列
         else:  # follow —— 跟随玩家选择的下落位置
             target = self.actor.col - (p.width - 1) // 2
             target = max(0, min(wmax, target))
-            self.aim_col += (target - self.aim_col) * min(1.0, dt * 9.0)
-        p.col = int(round(max(0, min(wmax, self.aim_col))))
+            p.aim_col += (target - p.aim_col) * min(1.0, dt * 9.0)
+        p.col = int(round(max(0, min(wmax, p.aim_col))))
 
-        self.aim_t -= dt
-        if self.aim_t <= 0:
-            self._begin_fall()
+        p.aim_t -= dt
+        if p.aim_t <= 0:
+            self._begin_fall(p)
 
-    def _begin_fall(self) -> None:
-        p = self.piece
+    def _begin_fall(self, p: Piece) -> None:
         if p is None:
             return
         self._fire_event("on_aim_end")
-        self.phase = FALL
+        p.phase = FALL
         p.fall_t = 0.0
         p.interval = self.fall_interval()
-        if self.instant:
-            self._instant_lock()
+        if p.instant:
+            self._instant_lock(p)
 
-    def _update_fall(self, dt: float) -> None:
-        p = self.piece
+    def _update_fall(self, p: Piece, dt: float) -> None:
         if p is None:
             return
-        if self.instant:
-            self._instant_lock()
+        if p.instant:
+            self._instant_lock(p)
             return
         p.interval = self.fall_interval()
         p.fall_t += dt
@@ -338,47 +452,44 @@ class Core:
         while p.fall_t >= p.interval and guard < 40:
             p.fall_t -= p.interval
             guard += 1
-            if not self._step_down():
+            if not self._step_down(p):
                 break
             if self.result:
                 return
 
-    def _step_down(self) -> bool:
-        p = self.piece
+    def _step_down(self, p: Piece) -> bool:
         nrow = p.row + 1
-        if self.stage.fits(p, None, nrow):
+        if self._fits_active(p, None, nrow):
             p.row = nrow
             self._collide_piece_actor()
             return True
-        self._lock()
+        self._lock(p)
         return False
 
-    def _instant_lock(self) -> None:
-        p = self.piece
+    def _instant_lock(self, p: Piece) -> None:
         if p is None:
             return
         target = self.stage.drop_row(p, p.row)
         while p.row < target:
             p.row += 1
-            if self._overlaps_actor():
+            if self._overlaps_actor(p):
                 self._fail("crush")
                 return
-        self._lock()
+        self._lock(p)
 
-    def _blocked_at_spawn(self) -> bool:
-        p = self.piece
+    def _blocked_at_spawn(self, p: Piece) -> bool:
         if p is None:
             return False
         return not self.stage.fits(p, None, p.row)
 
-    def _lock(self) -> None:
-        p = self.piece
+    def _lock(self, p: Piece) -> None:
         if p is None:
             return
         placed = self.stage.lock(p)
         if not placed:
             # 方块整体上不去也下不来（舞台顶端已被填满）
-            self.piece = None
+            if p in self.pieces:
+                self.pieces.remove(p)
             self.spawn_delay = 0.5
             if self.level["fail"].get("overflow", False):
                 self._fail("overflow")
@@ -388,11 +499,11 @@ class Core:
                 set(placed) & set(self.actor.tiles()):
             self._fail("crush")
             return
-        self.piece = None
-        self.phase = OVER
+        if p in self.pieces:
+            self.pieces.remove(p)
+        p.phase = OVER
         self.lock_count += 1
         self.spawn_delay = 0.22
-        self.instant = False
         self.vfx.trigger("shake", 3.4)
         self.vfx.trigger("flash", 0.18)
         if self.audio:
@@ -404,25 +515,29 @@ class Core:
         self.cur_interval = max(lo, self.cur_interval * ramp)
 
         self._fire_event("on_lock")
+        self._check_triggers()      # 固化数 / 时间等条件型事件立刻生效
         self._check_lose()
         if not self.result:
             self._check_win()
 
     # ================================================== 判定
-    def _overlaps_actor(self) -> bool:
-        p = self.piece
+    def _overlaps_actor(self, p: Piece) -> bool:
         if p is None:
             return False
         pc = set(c for c, r in p.cells() if r >= 0)
         return bool(pc & set(self.actor.tiles()))
 
     def _collide_piece_actor(self) -> None:
-        if self.result or self.piece is None or self.phase != FALL:
+        if self.result or not self.pieces:
             return
         if not self.level["fail"].get("crush", True):
             return
-        if self._overlaps_actor():
-            self._fail("crush")
+        for p in list(self.pieces):
+            if getattr(p, "phase", AIM) != FALL:
+                continue
+            if self._overlaps_actor(p):
+                self._fail("crush")
+                return
 
     def _check_win(self) -> None:
         if self.result:
@@ -509,7 +624,7 @@ class Core:
             return
         text = self.level.fail_text(reason)
         self.result = {"kind": "lose", "reason": reason, "text": text}
-        self.piece = None
+        self.pieces.clear()
         self.vfx.trigger("shake", 9.0)
         self.vfx.trigger("flash", 0.35)
         if self.audio:
@@ -519,30 +634,61 @@ class Core:
         self._fire_event("on_lose")
 
     # ================================================== 事件 / 剧本
-    def _check_row_events(self) -> None:
-        for key, val in self.level.get("events", {}).items():
-            if not key.startswith("on_row"):
-                continue
-            _, _, arg = key.partition(":")
+    def _check_triggers(self) -> None:
+        """每帧检查「条件型」触发时机：抵达行 / 最高行 / 演出时间 / 固化块数。"""
+        for ev in self.events:
+            t = ev.get("trigger")
+            p = ev.get("param")
+            hit = False
             try:
-                row = int(arg)
-            except ValueError:
+                if t == "on_row":
+                    hit = p is not None and self.actor.top_row <= int(p)
+                elif t == "on_height":
+                    hit = p is not None and self.best_row <= int(p)
+                elif t == "on_time":
+                    hit = p is not None and self.elapsed >= float(p)
+                elif t == "on_lock_count":
+                    hit = p is not None and self.lock_count >= int(p)
+                else:
+                    continue
+            except (TypeError, ValueError):
                 continue
-            if key in self.fired:
+            if hit:
+                self._run_event(ev)
+
+    def _trigger_events(self, trigger: str, param=None) -> None:
+        """触发「瞬时型」时机：开演 / 方块出现 / 开始下落 / 固化 / 胜负 / 按键。"""
+        for ev in self.events:
+            if ev.get("trigger") != trigger:
                 continue
-            if self.actor.top_row <= row:
-                self.fired.add(key)
-                self.run_event(key, val)
+            ep = ev.get("param")
+            if param is not None and ep is not None and \
+                    str(ep).lower() != str(param).lower():
+                continue
+            self._run_event(ev)
+
+    def _run_event(self, ev: dict) -> None:
+        uid = str(ev.get("id") or "") or \
+            f"{ev.get('trigger')}:{ev.get('param')}:{ev.get('_i', 0)}"
+        if ev.get("once", True):
+            if uid in self.fired:
+                return
+            self.fired.add(uid)
+        val = {"script": ev.get("script", ""),
+               "mode": ev.get("mode") or "ambient"}
+        if ev.get("story"):
+            val["story"] = ev["story"]
+        self.run_event(uid, val)
 
     def _fire_event(self, name: str) -> None:
-        val = self.level.event(name)
-        if val is None:
-            return
-        if name == "on_lock" and isinstance(val, dict) and val.get("repeat") is False:
-            if name in self.fired:
-                return
-            self.fired.add(name)
-        self.run_event(name, val)
+        """兼容旧接口：按 'on_row:5' 这样的键名触发对应事件。"""
+        trigger, param = L.split_trigger(name)
+        self._trigger_events(trigger, param)
+
+    def notify_key(self, key: str) -> None:
+        """外部（场景）上报一次按键，供 on_key 触发时机使用。"""
+        if key:
+            self._trigger_events("on_key", str(key).lower())
 
     def run_event(self, name: str, val) -> None:
         if isinstance(val, str):
@@ -594,15 +740,53 @@ class Core:
         }
 
     def _cmd_drop(self, arg: str) -> None:
-        try:
-            n = max(1, int(float((arg or "1").strip())))
-        except ValueError:
+        """drop [块数]
+           drop <形状> [列号 | player | random] [朝向] [块数]
+
+        例：drop 3 / drop T / drop T 4 / drop T player 1 / drop 十字 2 0 3
+        """
+        args = split_args(arg or "")
+        kind = None
+        col = None
+        rot = None
+        n = 1
+        if not args:
             n = 1
+        elif _is_num(args[0]):
+            n = max(1, int(float(args[0])))
+        else:
+            kind = str(args[0])
+            rest = args[1:]
+            if rest:
+                tok = rest[0]
+                if _is_num(tok):
+                    col = int(float(tok))
+                elif str(tok).lower() in ("player", "me", "center", "self"):
+                    col = "player"
+                elif str(tok).lower() in ("random", "rnd", "any"):
+                    col = "random"
+                rest = rest[1:]
+            if rest and _is_num(rest[0]):
+                rot = int(float(rest[0]))
+                rest = rest[1:]
+            if rest and _is_num(rest[0]):
+                n = max(1, int(float(rest[0])))
+        if kind is not None and not is_known(kind):
+            self.push_toast(f"未知形状：{kind}", S_WARN)
+            return
+        for _ in range(n):
+            self.forced.append({"kind": kind, "col": col, "rot": rot})
         self.drop_queue += n
-        if self.piece is not None and self.phase == AIM:
-            self.aim_t = 0.0
-            self.instant = True
-        elif self.piece is None:
+        aim = self.aiming
+        if kind is not None and aim is not None and \
+                len(self.pieces) >= self.concurrent():
+            # 指定了形状且场上已满：换掉正在瞄准的那块，视觉上才对得上
+            self.pieces.remove(aim)
+            aim = None
+        if aim is not None:
+            aim.aim_t = 0.0
+            aim.instant = True
+        elif not self.pieces:
             self.spawn_delay = 0.0
 
     def _cmd_lose(self, arg: str) -> None:
@@ -610,7 +794,7 @@ class Core:
         if not text:
             text = self.level.fail_text("script") or self.level.data["fail"]["text"]
         self.result = {"kind": "lose", "reason": "script", "text": text}
-        self.piece = None
+        self.pieces.clear()
         self.vfx.trigger("shake", 9.0)
         self.vfx.trigger("flash", 0.35)
 
@@ -724,6 +908,14 @@ class Core:
             if life > 0:
                 out.append((t, life, c))
         self.toast = out
+
+
+def _is_num(text) -> bool:
+    try:
+        float(str(text).strip())
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 S_ACCENT = (96, 178, 255)

@@ -10,6 +10,8 @@
     win                    直接胜利
     lose [文本]            直接失败（文本缺省用关卡失败文本）
     drop [n]               立即让 n 个方块下落（默认 1，瞬间到底）
+    drop 形状 [列] [朝向] [块数]
+                           指定形状与落点投放；列可为数字 / player / random
     vfx <name> on|off      激活 / 解除 VFX
     clear                  文本消除（清空对白与字幕）
     reset                  重置舞台

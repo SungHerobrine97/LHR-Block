@@ -116,10 +116,27 @@ class MenuScene(Scene):
                                   self.preset_names)
         self.b_wipe = ui.Button(pygame.Rect(bx, r.bottom - 60, bw, 24),
                                 "删除存档", self.wipe, 12, "danger")
-        self.b_refresh = ui.Button(pygame.Rect(bx, r.bottom - 32, bw, 22),
+        half = (bw - 6) // 2
+        self.b_import = ui.Button(pygame.Rect(bx, r.bottom - 32, half, 22),
+                                  "导入演出", self.import_level_file, 11, "ghost")
+        self.b_refresh = ui.Button(pygame.Rect(bx + half + 6, r.bottom - 32, half, 22),
                                    "刷新内容", self.reload, 11, "ghost")
         self.buttons = [self.b_start, self.b_edit, self.st_vol, self.b_preset,
-                        self.b_wipe, self.b_refresh]
+                        self.b_wipe, self.b_refresh, self.b_import]
+
+    def import_level_file(self):
+        """从外部 JSON 导入演出文件（会安装到 content/levels）。"""
+        from .editor import EditorScene
+        path = EditorScene._file_dialog(False)
+        if not path:
+            self.app.toast("未选择文件（也可放到 build/import 目录）", S.DIM)
+            return
+        names = L.import_level_file(path)
+        if not names:
+            self.app.toast("导入失败：不是有效的演出 JSON", S.BAD)
+            return
+        self.reload()
+        self.app.toast(f"已导入 {len(names)} 份演出", S.GOOD)
 
     def _set_volume(self, v: int) -> None:
         v = max(0, min(100, int(v)))
@@ -349,6 +366,11 @@ class PlayScene(Scene):
             self.focus_lost = False
             return
         if ev.type == pygame.KEYDOWN:
+            # 上报按键，供剧本的 on_key 触发时机使用
+            try:
+                self.core.notify_key(pygame.key.name(ev.key))
+            except Exception:      # noqa: BLE001
+                pass
             if ev.key == pygame.K_ESCAPE:
                 self.app.goto(self.app.editor_scene or MenuScene(self.app))
                 return
@@ -575,6 +597,8 @@ class PlayScene(Scene):
             ("已固化", f"{core.lock_count} 块"),
             ("用时", f"{core.elapsed:.1f}s"),
         ]
+        if core.concurrent() > 1:
+            rows.insert(1, ("在场方块", f"{len(core.pieces)} / {core.concurrent()}"))
         for k, v in rows:
             S.draw_text(surf, k, (x, y), 12, S.DIM2)
             img = S.font(12, True).render(str(v), True, S.TEXT)

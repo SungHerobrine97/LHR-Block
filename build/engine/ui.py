@@ -440,6 +440,115 @@ class Label(Widget):
         surf.blit(img, p)
 
 
+class GridEditor(Widget):
+    """方格勾选器：用于自定义形状的格子编辑。"""
+
+    def __init__(self, rect, cols=5, rows=5, cells=None, cb=None):
+        self.rect = pygame.Rect(rect)
+        self.cols = max(1, int(cols))
+        self.rows = max(1, int(rows))
+        self.cells = set((int(x), int(y)) for x, y in (cells or []))
+        self.cb = cb
+        self.locked = False
+
+    # -------------------------------------------------- 数据
+    def get_cells(self) -> list:
+        return sorted(self.cells)
+
+    def set_cells(self, cells) -> None:
+        self.cells = set((int(x), int(y)) for x, y in (cells or []))
+        self.cells = set(c for c in self.cells
+                         if 0 <= c[0] < self.cols and 0 <= c[1] < self.rows)
+
+    def _geom(self):
+        size = max(8, min(self.rect.w // self.cols, self.rect.h // self.rows))
+        w, h = size * self.cols, size * self.rows
+        return size, self.rect.x + (self.rect.w - w) // 2, \
+            self.rect.y + (self.rect.h - h) // 2
+
+    def _cell_rect(self, c, r, size, ox, oy):
+        return pygame.Rect(ox + c * size, oy + r * size, size, size)
+
+    # -------------------------------------------------- 绘制 / 交互
+    def draw(self, surf, mouse, color=(94, 196, 244), **kw):
+        size, ox, oy = self._geom()
+        for r in range(self.rows):
+            for c in range(self.cols):
+                rc = self._cell_rect(c, r, size, ox, oy)
+                on = (c, r) in self.cells
+                hot = rc.collidepoint(mouse) and not self.locked
+                S.round_rect(surf, rc.inflate(-2, -2),
+                             S.blend(S.PANEL2, 1.25 if hot else 1.0), 3)
+                if on:
+                    inner = rc.inflate(-max(3, size // 5), -max(3, size // 5))
+                    S.round_rect(surf, inner, color, max(2, size // 8))
+                    S.round_rect(surf, inner, S.blend(color, 1.5), max(2, size // 8), 1)
+                else:
+                    S.round_rect(surf, rc.inflate(-2, -2), S.LINE, 3, 1)
+        if self.locked:
+            img = S.font(11).render("内置形状，点「复制」后再改", True, S.DIM)
+            surf.blit(img, (self.rect.x + 2, self.rect.bottom - img.get_height() - 1))
+
+    def handle_click(self, pos):
+        if self.locked:
+            return False
+        size, ox, oy = self._geom()
+        for r in range(self.rows):
+            for c in range(self.cols):
+                if self._cell_rect(c, r, size, ox, oy).collidepoint(pos):
+                    if (c, r) in self.cells:
+                        self.cells.discard((c, r))
+                    else:
+                        self.cells.add((c, r))
+                    if self.cb:
+                        self.cb(self.get_cells())
+                    return True
+        return False
+
+
+class ColorChoice(Widget):
+    """色号选择器：点击循环切换，右侧显示色块与色名。"""
+
+    def __init__(self, rect, label, ids, index=0, cb=None, names=None):
+        self.rect = pygame.Rect(rect)
+        self.label = label
+        self.ids = list(ids)
+        self.names = names or {}
+        self.index = max(0, min(len(self.ids) - 1, index))
+        self.cb = cb
+
+    @property
+    def value(self):
+        return self.ids[self.index]
+
+    def set_value(self, v):
+        if v in self.ids:
+            self.index = self.ids.index(v)
+
+    def draw(self, surf, mouse, **kw):
+        r = self.rect
+        hot = r.collidepoint(mouse)
+        S.round_rect(surf, r, S.blend(S.PANEL2, 1.2 if hot else 1.0), 7)
+        S.round_rect(surf, r, S.LINE, 7, 1)
+        S.draw_text(surf, self.label, (r.x + 10, r.centery), 13, S.TEXT,
+                    anchor="midleft")
+        cid = self.value
+        sw = pygame.Rect(r.right - 58, r.centery - 9, 18, 18)
+        S.round_rect(surf, sw, S.BLOCK_COLORS.get(cid, (140, 150, 170)), 4)
+        S.round_rect(surf, sw, S.LINE2, 4, 1)
+        txt = f"{self.names.get(cid, cid)} · {cid}"
+        img = S.font(13, True).render(txt, True, S.ACCENT)
+        surf.blit(img, (sw.x - 8 - img.get_width(), r.centery - img.get_height() // 2))
+
+    def handle_click(self, pos):
+        if self.rect.collidepoint(pos):
+            self.index = (self.index + 1) % len(self.ids)
+            if self.cb:
+                self.cb(self.value)
+            return True
+        return False
+
+
 class ListRow(Widget):
     def __init__(self, rect, title, sub="", cb=None, selected=False, tag=""):
         self.rect = pygame.Rect(rect)

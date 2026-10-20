@@ -1,0 +1,108 @@
+{
+  "id": "multi_blocks",
+  "title": "三块齐落",
+  "subtitle": "同时在场 3 个方块：一块在瞄准，其余正在下落",
+  "author": "系统",
+  "stage": {
+    "width": 12,
+    "height": 20
+  },
+  "blocks": {
+    "pool": [
+      "I",
+      "O",
+      "T",
+      "L"
+    ],
+    "allow_rotation": true,
+    "player_rotate": true,
+    "hover": "follow",
+    "concurrent": 3,
+    "spawn_gap": 0.8,
+    "aim_time": [
+      2.5,
+      5.0
+    ],
+    "fall_interval": 0.4,
+    "fall_interval_min": 0.16,
+    "ramp": 0.995,
+    "preview": true
+  },
+  "player": {
+    "spawn_col": null,
+    "move_speed": 6.6,
+    "jump_height": 2.6,
+    "gravity": 34.0,
+    "climb": 1,
+    "air_control": 1.0
+  },
+  "goal": {
+    "type": "reach_row",
+    "row": 1
+  },
+  "fail": {
+    "text": "败北",
+    "texts": {
+      "crush": "被其中一块砸中了。",
+      "buried": "被三面夹住，动不了。",
+      "stuck": "爬不上去了。",
+      "overflow": "舞台满了。"
+    },
+    "crush": true,
+    "buried": true,
+    "stuck": false,
+    "overflow": false
+  },
+  "vfx": [
+    "embers",
+    "scanline"
+  ],
+  "shapes": [],
+  "events": [
+    {
+      "trigger": "on_start",
+      "param": null,
+      "mode": "blocking",
+      "once": true,
+      "script": "司仪: 这一场，舞台上会同时出现三个方块。\n司仪: 最新那块跟着你走，另外两块会停在它们出现的那一列继续倒计时。\n司仪: 想让它们错开站位的诀窍——趁新块还在瞄准，把它引到你要的列。"
+    },
+    {
+      "trigger": "on_lock_count",
+      "param": 5,
+      "mode": "ambient",
+      "once": true,
+      "script": "司仪: 五块了，节奏会越来越快。 \\ sfx alarm 0.6"
+    },
+    {
+      "trigger": "on_row",
+      "param": 10,
+      "mode": "ambient",
+      "once": true,
+      "script": "司仪: 过半了。 \\ sfx coin"
+    },
+    {
+      "trigger": "on_win",
+      "param": null,
+      "mode": "blocking",
+      "once": true,
+      "script": "司仪: 三块齐飞都没砸到你，漂亮。"
+    },
+    {
+      "trigger": "on_lose",
+      "param": null,
+      "mode": "ambient",
+      "once": true,
+      "script": "司仪: 别急，看清楚哪块先落。"
+    }
+  ],
+  "terrain": [],
+  "tags": [
+    "示例",
+    "多块"
+  ],
+  "order": 6,
+  "audio": {
+    "bgm": "tense",
+    "volume": 60
+  }
+}

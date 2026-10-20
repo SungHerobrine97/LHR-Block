@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": 0,
-  "last_level": "gauntlet",
+  "last_level": "multi_blocks",
   "levels": {
     "tutorial": {
       "cleared": false,
@@ -19,14 +19,28 @@
     },
     "gauntlet": {
       "cleared": false,
-      "best_row": 18,
-      "attempts": 3,
+      "best_row": 21,
+      "attempts": 1,
       "clears": 0,
       "best_ms": null
     },
     "cursed_stage": {
       "cleared": false,
       "best_row": 17,
+      "attempts": 1,
+      "clears": 0,
+      "best_ms": null
+    },
+    "shape_demo": {
+      "cleared": false,
+      "best_row": 17,
+      "attempts": 1,
+      "clears": 0,
+      "best_ms": null
+    },
+    "multi_blocks": {
+      "cleared": false,
+      "best_row": 19,
       "attempts": 1,
       "clears": 0,
       "best_ms": null

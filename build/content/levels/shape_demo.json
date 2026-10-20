@@ -1,0 +1,146 @@
+{
+  "id": "shape_demo",
+  "title": "形状与事件示例",
+  "subtitle": "自定义形状 · drop 定点投放 · 多条自定义事件",
+  "author": "系统",
+  "stage": {
+    "width": 10,
+    "height": 18
+  },
+  "blocks": {
+    "pool": [
+      "I",
+      "O",
+      "T",
+      "cross",
+      "stair"
+    ],
+    "allow_rotation": true,
+    "player_rotate": true,
+    "hover": "follow",
+    "aim_time": [
+      3.5,
+      6.5
+    ],
+    "fall_interval": 0.34,
+    "fall_interval_min": 0.14,
+    "ramp": 0.99,
+    "preview": true
+  },
+  "player": {
+    "spawn_col": null,
+    "move_speed": 6.2,
+    "jump_height": 2.6,
+    "gravity": 34.0,
+    "climb": 1,
+    "air_control": 1.0
+  },
+  "goal": {
+    "type": "reach_row",
+    "row": 2
+  },
+  "fail": {
+    "text": "败北",
+    "texts": {
+      "crush": "被自己点的方块砸中了。",
+      "buried": "没路了。",
+      "stuck": "爬不上去了。",
+      "overflow": "舞台满了。"
+    },
+    "crush": true,
+    "buried": true,
+    "stuck": false,
+    "overflow": false
+  },
+  "vfx": [
+    "scanline",
+    "stars"
+  ],
+  "shapes": [
+    {
+      "id": "cross",
+      "name": "十字",
+      "color": 9,
+      "cells": [
+        [1, 0],
+        [0, 1],
+        [1, 1],
+        [2, 1],
+        [1, 2]
+      ]
+    },
+    {
+      "id": "stair",
+      "name": "阶梯",
+      "color": 10,
+      "cells": [
+        [1, 0],
+        [2, 0],
+        [0, 1],
+        [1, 1]
+      ]
+    }
+  ],
+  "events": [
+    {
+      "trigger": "on_start",
+      "param": null,
+      "mode": "blocking",
+      "once": true,
+      "script": "司仪: 这一场演示两件事——自定义形状，和自定义事件。\n司仪: 方块池里有「十字」和「阶梯」，都是手画的形状。\n司仪: 按 X 还能旋转它们；固化之后就再也改不动了。"
+    },
+    {
+      "trigger": "on_time",
+      "param": 6,
+      "mode": "ambient",
+      "once": true,
+      "script": "司仪: 六秒到了，剧本直接往 4 号位丢一块十字。 \\ drop cross 4 \\ sfx chime"
+    },
+    {
+      "trigger": "on_lock_count",
+      "param": 3,
+      "mode": "ambient",
+      "once": true,
+      "script": "司仪: 三块了。\\ sfx tick"
+    },
+    {
+      "trigger": "on_row",
+      "param": 8,
+      "mode": "ambient",
+      "once": true,
+      "script": "司仪: 已经爬到第八行。 \\ sfx coin"
+    },
+    {
+      "trigger": "on_key",
+      "param": "x",
+      "mode": "ambient",
+      "once": true,
+      "script": "司仪: 转得不错。"
+    },
+    {
+      "trigger": "on_win",
+      "param": null,
+      "mode": "blocking",
+      "once": true,
+      "script": "司仪: 登顶，收工。"
+    },
+    {
+      "trigger": "on_lose",
+      "param": null,
+      "mode": "ambient",
+      "once": true,
+      "script": "司仪: 再来一遍就是了。"
+    }
+  ],
+  "terrain": [],
+  "tags": [
+    "示例",
+    "自定义形状",
+    "自定义事件"
+  ],
+  "order": 5,
+  "audio": {
+    "bgm": "calm",
+    "volume": 60
+  }
+}

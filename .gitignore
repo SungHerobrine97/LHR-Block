@@ -14,3 +14,4 @@ story/
 build/smoke_test.py
 build/engine/__pycache__/
 build/启动游戏.bat
+build/build.zip
