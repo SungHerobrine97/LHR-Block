@@ -1,0 +1,84 @@
+{
+  "id": "default",
+  "title": "初次登场",
+  "subtitle": "方块追着你落，爬到最顶端去。",
+  "author": "系统",
+  "stage": {
+    "width": 10,
+    "height": 20
+  },
+  "blocks": {
+    "pool": [
+      "I",
+      "O",
+      "T",
+      "S",
+      "Z",
+      "J",
+      "L"
+    ],
+    "allow_rotation": true,
+    "hover": "follow",
+    "aim_time": [
+      2.5,
+      8.0
+    ],
+    "fall_interval": 0.3,
+    "fall_interval_min": 0.13,
+    "ramp": 0.985,
+    "preview": true
+  },
+  "player": {
+    "spawn_col": null,
+    "move_speed": 6.2,
+    "jump_height": 2.6,
+    "gravity": 34.0,
+    "climb": 1,
+    "air_control": 1.0
+  },
+  "goal": {
+    "type": "reach_row",
+    "row": 0
+  },
+  "fail": {
+    "text": "败北",
+    "texts": {
+      "crush": "你被主持人的方块砸中了。",
+      "buried": "无路可退，演出到此为止。",
+      "stuck": "再也爬不上去了。",
+      "overflow": "舞台被塞满，没有你的位置了。"
+    },
+    "crush": true,
+    "buried": true,
+    "stuck": false,
+    "overflow": false
+  },
+  "vfx": [
+    "rain",
+    "embers"
+  ],
+  "events": {
+    "on_start": {
+      "mode": "blocking",
+      "script": ":灯光亮起，第十号舞台正在等你。\n司仪: 欢迎登台，小家伙。规则只有一条——别被砸到。\n司仪: 方块会跟着你走，直到倒计时归零。\n:爬到最高处，演出就算成功。"
+    },
+    "on_lock": {
+      "mode": "ambient",
+      "script": ":方块砸落的声音在舞台里回荡。"
+    },
+    "on_win": {
+      "mode": "blocking",
+      "script": "司仪: 登顶！今晚的主角，是你。"
+    }
+  },
+  "terrain": [],
+  "tags": [
+    "默认",
+    "标准规则"
+  ],
+  "order": 1,
+  "audio": {
+    "bgm": "calm",
+    "volume": 55
+  }
+}

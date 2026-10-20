@@ -1,0 +1,980 @@
+"""内置编辑器：自定义舞台、玩法规则、胜利/失败条件、VFX、事件与剧本。"""
+from __future__ import annotations
+
+import copy
+import json
+import os
+
+import pygame
+
+from . import level as L
+from . import render as R
+from . import settings as S
+from . import ui
+from .audio import Audio, BGM_LABELS, SFX_LABELS, resolve_bgm, resolve_sfx
+from .pieces import ALL_KINDS
+from .stage import CH_EMPTY, CH_WALL, Stage
+from .vfx import ALL_VFX, RENDER_NAME
+
+PALETTE = [("空", CH_EMPTY, None), ("墙", CH_WALL, S.WALL_COLOR)] + \
+          [(k, str(i + 1), S.BLOCK_COLORS[i + 1]) for i, k in enumerate(ALL_KINDS)]
+
+HOVER_LABELS = {"follow": "跟随小人", "manual": "玩家控制", "random": "随机落点"}
+GOAL_LABELS = {"reach_row": "抵达顶层行", "survive": "坚持时间",
+               "lock_count": "承受方块数", "none": "由剧本决定"}
+
+
+class EditorScene:
+    """编辑器场景（实现 Scene 接口，供 App 调度）。"""
+
+    def __init__(self, app, level: L.Level | None = None):
+        self.app = app
+        self.level = level or L.Level(dict(L.DEFAULTS))
+        self.stage = Stage(self.level.width, self.level.height)
+        rows = self.level.get("terrain") or []
+        if rows:
+            self.stage.load_rows(rows)
+        self.tab = 0
+        self.brush = CH_EMPTY
+        self.spawn_col = self.level["player"].get("spawn_col")
+        if self.spawn_col is None:
+            self.spawn_col = self.stage.w // 2
+        self.focus = None
+        self.t = 0.0
+        self.hover_cell = None
+        self.painting = False
+        self.paint_button = 1
+        self.row_n = max(0, self.level.goal_row + 1)
+        self.message = ""
+        self.message_life = 0.0
+        self.event_rows = []
+        self.cur_event = "on_start"
+        self.scroll = 0
+        self._labels: list = []
+        self._build()
+
+    # ============================================================ 布局
+    def _rects(self, w, h):
+        right_w = 420
+        top_y = 26
+        top = pygame.Rect(16, top_y, w - 32, 32)
+        canvas = pygame.Rect(16, 118, w - right_w - 40, h - 118 - 40)
+        pal = pygame.Rect(16, 66, w - right_w - 40, 40)
+        right = pygame.Rect(w - right_w - 8, 66, right_w, h - 82)
+        return {"canvas": canvas, "palette": pal, "right": right, "top": top}
+
+    # ============================================================ 构建
+    def _build(self):
+        w, h = self.app.screen.get_size()
+        rt = self._rects(w, h)
+        self.inputs: list = []
+        self.clicks: list = []
+
+        # 右侧标签页
+        r = rt["right"]
+        tabs = ["基本", "玩法", "目标/失败", "VFX", "事件/剧本"]
+        self.tab_buttons = []
+        tw = (r.w - 8) // len(tabs)
+        for i, name in enumerate(tabs):
+            self.tab_buttons.append(
+                ui.Button(pygame.Rect(r.x + i * tw, r.y, tw - 4, 28), name,
+                          (lambda i=i: self._set_tab(i)), 13,
+                          "primary" if i == self.tab else "ghost"))
+        self.clicks += self.tab_buttons
+
+        body = pygame.Rect(r.x, r.y + 36, r.w - 8, r.h - 36)
+        self.body = body
+        self._build_tab(body)
+
+        # 顶栏：输入框按比例分配剩余宽度，按钮组固定在右侧，任何窗口宽度都不重叠
+        top = rt["top"]
+        gap = 6
+        btn_sizes = [76, 84, 62, 62, 64]
+        btn_total = sum(btn_sizes) + gap * (len(btn_sizes) - 1)
+        avail = max(260, top.width - btn_total - 14)
+        total = max(220, avail - 3 * gap)      # 预留 3 个间隙，避免与按钮组相撞
+        ratios = (0.21, 0.30, 0.31, 0.18)
+        widths = [int(total * r) for r in ratios]
+        widths[-1] = total - sum(widths[:-1])  # 保证总和恰好等于可用宽度
+        x = top.x
+        rects = []
+        for wd in widths:
+            rects.append(pygame.Rect(x, top.y, wd, 30))
+            x += wd + gap
+        self.in_id = ui.TextInput(rects[0], self.level.id, "关卡 ID", size=13)
+        self.in_title = ui.TextInput(rects[1], self.level.get("title", ""), "演出标题",
+                                    size=13)
+        self.in_sub = ui.TextInput(rects[2], self.level.get("subtitle", ""), "副标题",
+                                   size=13)
+        self.in_author = ui.TextInput(rects[3], self.level.get("author", ""), "作者",
+                                     size=13)
+        self.inputs += [self.in_id, self.in_title, self.in_sub, self.in_author]
+
+        bx = top.right - btn_total
+        self.b_save = ui.Button(pygame.Rect(bx, top.y, btn_sizes[0], 30),
+                                "保存", self.save, 13, "primary")
+        bx += btn_sizes[0] + gap
+        self.b_saveas = ui.Button(pygame.Rect(bx, top.y, btn_sizes[1], 30),
+                                  "另存为", self.save_as, 13)
+        bx += btn_sizes[1] + gap
+        self.b_load = ui.Button(pygame.Rect(bx, top.y, btn_sizes[2], 30),
+                                "载入", self.load_dialog, 12)
+        bx += btn_sizes[2] + gap
+        self.b_test = ui.Button(pygame.Rect(bx, top.y, btn_sizes[3], 30),
+                                "试演", self.test, 13, "primary")
+        bx += btn_sizes[3] + gap
+        self.b_back = ui.Button(pygame.Rect(bx, top.y, btn_sizes[4], 30),
+                                "返回", self.back, 13, "ghost")
+        self.clicks += [self.b_save, self.b_saveas, self.b_load, self.b_test, self.b_back]
+        self._top_widgets = [self.in_id, self.in_title, self.in_sub, self.in_author,
+                             self.b_save, self.b_saveas, self.b_load, self.b_test,
+                             self.b_back]
+
+    def _set_tab(self, i):
+        if self.tab == i:
+            return
+        self._sync()
+        self.tab = i
+        self.scroll = 0
+        self._build()
+        self.tab = i
+
+    def _build_tab(self, body):
+        self._labels = []
+        # 清掉上一个分页遗留的控件，避免叠加绘制
+        from .ui import Widget as _W
+        for name, val in list(vars(self).items()):
+            if isinstance(val, _W):
+                delattr(self, name)
+        if self.focus is not None:
+            self.focus = None
+            pygame.key.stop_text_input()
+        self.pool_toggles = []
+        self.vfx_toggles = []
+        self.event_rows = []
+        d = self.level.data
+        blocks = d["blocks"]
+        player = d["player"]
+        goal = d["goal"]
+        fail = d["fail"]
+        cx = body.x + 4
+        cw = body.w - 8
+        y = body.y + 4
+
+        def row(hgt=26, gap=4):
+            nonlocal y
+            r = pygame.Rect(cx, y, cw, hgt)
+            y += hgt + gap
+            return r
+
+        if self.tab == 0:      # 基本
+            self._label(cx, y, "舞台尺寸"); y += 16
+            self.sw = ui.Stepper(row(28), "宽（格）", d["stage"]["width"], 4, 30, 1,
+                                 self._resize_stage, "{:g}")
+            self.sh = ui.Stepper(row(28), "高（格）", d["stage"]["height"], 6, 40, 1,
+                                 self._resize_stage, "{:g}")
+            y += 6
+            self._label(cx, y, "失败文本（未定义时显示“败北”）"); y += 16
+            self.in_fail = ui.TextInput(row(28), fail.get("text", "败北"), size=13)
+            self.inputs.append(self.in_fail)
+            y += 8
+            for key, lab in (("crush", "被方块命中时"), ("buried", "被封困时"),
+                             ("stuck", "无法上行时"), ("overflow", "舞台填满时")):
+                self._label(cx, y, lab, 11, S.DIM2); y += 15
+                ti = ui.TextInput((cx, y, cw, 24), (fail.get("texts") or {}).get(key, ""),
+                                  "沿用上方失败文本", size=12)
+                self.inputs.append(ti)
+                setattr(self, "in_ft_" + key, ti)
+                y += 30
+            y += 4
+            self._label(cx, y, "画笔：先在左侧调色板选色，再在舞台上拖动绘制地形；"
+                               "右键 / 退格擦除。", 11, S.DIM2)
+            y += 18
+            self._label(cx, y, "提示：按住 Shift 点击舞台可设置小人出生列。", 11, S.PURPLE)
+
+        elif self.tab == 1:    # 玩法
+            self._label(cx, y, "方块"); y += 16
+            self.c_hover = ui.Choice(row(28), "瞄准方式",
+                                     ["follow", "manual", "random"],
+                                     ["follow", "manual", "random"].index(
+                                         blocks.get("hover", "follow")),
+                                     None, HOVER_LABELS)
+            self.t_rot = ui.Toggle(row(26), "允许随机旋转",
+                                   bool(blocks.get("allow_rotation", True)))
+            self.t_prot = ui.Toggle(row(26), "玩家可旋转方块（X 键）",
+                                    bool(blocks.get("player_rotate", True)))
+            self.t_prev = ui.Toggle(row(26), "显示下一块预览",
+                                    bool(blocks.get("preview", True)))
+            self.st_aimlo = ui.Stepper(row(26), "倒计时下限（秒）",
+                                       float(blocks.get("aim_time", [2, 9.9])[0]),
+                                       0.5, 9.9, 0.5, None, "{:.1f}")
+            self.st_aimhi = ui.Stepper(row(26), "倒计时上限（<10 秒）",
+                                       float(blocks.get("aim_time", [2, 9.9])[1]),
+                                       1.0, 9.9, 0.5, None, "{:.1f}")
+            self.st_fall = ui.Stepper(row(26), "下落间隔（秒/格）",
+                                      float(blocks.get("fall_interval", 0.3)),
+                                      0.05, 2.0, 0.05, None, "{:.2f}")
+            self.st_fallmin = ui.Stepper(row(26), "最短下落间隔",
+                                         float(blocks.get("fall_interval_min", 0.1)),
+                                         0.02, 1.0, 0.02, None, "{:.2f}")
+            self.st_ramp = ui.Stepper(row(26), "固化后加速系数",
+                                      float(blocks.get("ramp", 0.985)),
+                                      0.9, 1.0, 0.005, None, "{:.3f}")
+            y += 8
+            self._label(cx, y, "方块池（至少保留一种）"); y += 16
+            pool = set(blocks.get("pool") or [])
+            self.pool_toggles = []
+            bx = cx
+            for i, k in enumerate(ALL_KINDS):
+                tw = 58
+                if bx + tw > cx + cw:
+                    bx = cx
+                    y += 26
+                tg = ui.Toggle(pygame.Rect(bx, y, tw, 22), k, k in pool)
+                tg.kind_tag = k
+                self.pool_toggles.append(tg)
+                bx += tw + 6
+            y += 30
+            self._label(cx, y, "小人"); y += 16
+            self.st_move = ui.Stepper(row(26), "移动速度（格/秒）",
+                                      float(player.get("move_speed", 6.2)),
+                                      1.0, 20.0, 0.2, None, "{:.1f}")
+            self.st_jump = ui.Stepper(row(26), "跳跃高度（格）",
+                                      float(player.get("jump_height", 2.15)),
+                                      1.0, 5.0, 0.05, None, "{:.2f}")
+            self.st_grav = ui.Stepper(row(26), "重力", float(player.get("gravity", 34.0)),
+                                      5.0, 80.0, 1.0, None, "{:g}")
+            self.st_climb = ui.Stepper(row(26), "可自动攀爬（格）",
+                                       int(player.get("climb", 1)), 0, 3, 1, None, "{:g}")
+            self.st_spawn = ui.Stepper(row(26), "出生列（0 起）", int(self.spawn_col),
+                                       0, max(0, d["stage"]["width"] - 1), 1,
+                                       self._set_spawn, "{:g}")
+            y += 8
+            self._label(cx, y, "音频（开演后自动循环播放）"); y += 16
+            bgm_names = [""] + Audio.list_bgm()
+            bgm_labels = ["（无）"] + [
+                f"{BGM_LABELS.get(n, n)} · {n}" for n in Audio.list_bgm()]
+            cur_bgm = (d.get("audio") or {}).get("bgm", "") or ""
+            self.c_bgm = ui.Choice(row(28), "开演音乐", bgm_names,
+                                   bgm_names.index(cur_bgm) if cur_bgm in bgm_names else 0,
+                                   self._apply_bgm, bgm_labels)
+            self.st_vol = ui.Stepper(pygame.Rect(cx, y, cw - 240, 26), "音量",
+                                     int((d.get("audio") or {}).get("volume", 100)),
+                                     0, 100, 5, self._set_vol, "{:g}")
+            self.b_bgtest = ui.Button(pygame.Rect(cx + cw - 234, y, 112, 26), "试听",
+                                      self._test_bgm, 12)
+            self.b_bgstop = ui.Button(pygame.Rect(cx + cw - 116, y, 112, 26), "停止",
+                                      self._stop_bgm, 12)
+            y += 30
+
+        elif self.tab == 2:    # 目标 / 失败
+            self._label(cx, y, "胜利条件"); y += 16
+            keys = list(GOAL_LABELS.keys())
+            self.c_goal = ui.Choice(row(28), "类型", keys,
+                                    keys.index(goal.get("type", "reach_row")),
+                                    None, [GOAL_LABELS[k] for k in keys])
+            self.st_grow = ui.Stepper(row(26), "目标行（0 = 舞台顶部）",
+                                      int(goal.get("row", 0)), 0,
+                                      max(0, d["stage"]["height"] - 1), 1, None, "{:g}")
+            self.st_gsec = ui.Stepper(row(26), "坚持秒数", int(goal.get("seconds", 60)),
+                                      5, 600, 5, None, "{:g}")
+            self.st_gcnt = ui.Stepper(row(26), "承受方块数", int(goal.get("count", 20)),
+                                      1, 200, 1, None, "{:g}")
+            y += 10
+            self._label(cx, y, "失败条件（命中即立即终止演出）"); y += 16
+            self.t_crush = ui.Toggle(row(26), "被下落的方块命中",
+                                     bool(fail.get("crush", True)),
+                                     hint="PRD 默认开启")
+            self.t_buried = ui.Toggle(row(26), "被困在封闭空间内",
+                                      bool(fail.get("buried", True)),
+                                      hint="墙壁/边界算")
+            self.t_stuck = ui.Toggle(row(26), "再也爬不上去",
+                                     bool(fail.get("stuck", False)))
+            self.t_over = ui.Toggle(row(26), "舞台被填满",
+                                    bool(fail.get("overflow", True)))
+            y += 8
+            self._label(cx, y, "说明：勾选后才会计入失败判定；取消勾选则该情形不再终止演出。",
+                        11, S.DIM2)
+
+        elif self.tab == 3:    # VFX
+            self._label(cx, y, "点击开关视觉特效（可在剧本中用 vfx 指令动态开关）")
+            y += 20
+            enabled = set(d.get("vfx") or [])
+            self.vfx_toggles = []
+            bx = cx
+            for name in ALL_VFX:
+                tw = (cw - 12) // 2
+                if bx + tw > cx + cw:
+                    bx = cx
+                    y += 30
+                tg = ui.Toggle(pygame.Rect(bx, y, tw, 24),
+                               f"{RENDER_NAME.get(name, name)} · {name}",
+                               name in enabled)
+                tg.vfx_name = name
+                self.vfx_toggles.append(tg)
+                bx += tw + 6
+            y += 34
+            self._label(cx, y, "已启用的 VFX 会写入关卡，演出一开始即生效。", 11, S.DIM2)
+
+        else:                  # 事件 / 剧本
+            self._label(cx, y, "触发时机")
+            y += 16
+            ev_rows = [
+                ("on_start", "开演时"),
+                ("on_spawn", "方块出现时"),
+                ("on_aim_end", "倒计时结束、开始下落时"),
+                ("on_lock", "方块固化后"),
+                (f"on_row:{self.row_n}", f"小人抵达第 {self.row_n} 行"),
+                ("on_win", "胜利时"),
+                ("on_lose", "失败时"),
+            ]
+            self.event_rows = []
+            for key, lab in ev_rows:
+                have = bool(self.level.event(key))
+                rect = pygame.Rect(cx, y, cw, 26)
+                rr = ui.ListRow(rect, lab, "已编写剧本" if have else "空",
+                                (lambda k=key: self._pick_event(k)),
+                                key == self.cur_event, "●" if have else "")
+                rr.key = key
+                self.event_rows.append(rr)
+                self.clicks.append(rr)
+                y += 30
+            if self.cur_event.startswith("on_row"):
+                self.st_row = ui.Stepper(pygame.Rect(cx, y, cw, 26),
+                                         "行号", self.row_n, 0,
+                                         max(0, d["stage"]["height"] - 1), 1,
+                                         self._set_row_event, "{:g}")
+                self.clicks.append(self.st_row)
+                y += 32
+            y += 4
+            self.c_mode = ui.Choice(pygame.Rect(cx, y, cw, 26), "演出方式",
+                                    ["ambient", "blocking"],
+                                    0 if self._ev_mode() == "ambient" else 1,
+                                    None, ["自动推进（不暂停）", "等待玩家确认"])
+            self.clicks.append(self.c_mode)
+            y += 32
+            avail = body.bottom - y - 74
+            self.ta = ui.TextArea(pygame.Rect(cx, y, cw, max(80, avail)),
+                                  self._ev_script(), size=13)
+            self.inputs.append(self.ta)
+            y += avail + 4
+
+            # 音效 / 音乐插入助手
+            sfx_names = Audio.list_sfx() + Audio.list_files()
+            sfx_labels = [f"{SFX_LABELS.get(n, n)} · {n}" for n in Audio.list_sfx()] \
+                + [f"文件 · {n}" for n in Audio.list_files()]
+            self.c_snd = ui.Choice(pygame.Rect(cx, body.bottom - 62, cw - 200, 26),
+                                   "音效", sfx_names, 0, None, sfx_labels)
+            self.b_sndtest = ui.Button(pygame.Rect(cx + cw - 194, body.bottom - 62, 58, 26),
+                                       "试听", self._test_sfx, 12)
+            self.b_sndsfx = ui.Button(pygame.Rect(cx + cw - 132, body.bottom - 62, 62, 26),
+                                      "插 sfx", self._ins_sfx, 12)
+            self.b_sndbgm = ui.Button(pygame.Rect(cx + cw - 66, body.bottom - 62, 62, 26),
+                                      "插 bgm", self._ins_bgm, 12)
+            self.clicks += [self.c_snd, self.b_sndtest, self.b_sndsfx, self.b_sndbgm]
+
+            stories = L.list_stories()
+            if stories:
+                names = [os.path.splitext(s)[0] for s in stories]
+                self.c_story = ui.Choice(pygame.Rect(cx, body.bottom - 30, cw - 96, 26),
+                                         "插入剧情文件", stories, 0, None, names)
+                self.b_story = ui.Button(pygame.Rect(body.right - 92, body.bottom - 30,
+                                                     88, 26), "载入", self._load_story, 12)
+                self.clicks += [self.c_story, self.b_story]
+
+        # 收集可点击控件
+        for obj in list(vars(self).values()):
+            if hasattr(obj, "handle_click") and hasattr(obj, "draw") \
+                    and obj not in self.clicks and not isinstance(obj, (list, tuple)):
+                if isinstance(obj, (ui.Button, ui.Toggle, ui.Choice, ui.Stepper,
+                                    ui.ListRow)):
+                    self.clicks.append(obj)
+        for tg in getattr(self, "pool_toggles", []) + getattr(self, "vfx_toggles", []):
+            if tg not in self.clicks:
+                self.clicks.append(tg)
+
+        # 内容总高（用于滚动）
+        self.content_h = max(0, y - body.y)
+        self.scroll = max(0, min(self.scroll, self.max_scroll()))
+
+    # -------------------------------------------------- 滚动
+    def max_scroll(self) -> int:
+        return max(0, self.content_h - self.body.h)
+
+    def _top_set(self) -> set:
+        return set(getattr(self, "_top_widgets", []))
+
+    def _body_widgets(self) -> list:
+        """属于右侧面板、随滚动平移的控件（不含顶栏与分页按钮）。"""
+        top = self._top_set()
+        out = [w for w in self.clicks
+               if w not in top and w not in self.tab_buttons
+               and getattr(w, "rect", None) is not None]
+        out += [w for w in self.inputs if w not in top
+                and getattr(w, "rect", None) is not None]
+        return out
+
+    @staticmethod
+    def _shift(wi, dy: int):
+        """临时平移控件矩形用于绘制 / 命中检测，返回待还原的快照。"""
+        if not dy:
+            return None
+        saved = [wi.rect]
+        wi.rect = wi.rect.move(0, -dy)
+        if hasattr(wi, "minus"):
+            saved += [wi.minus, wi.plus]
+            wi.minus = wi.minus.move(0, -dy)
+            wi.plus = wi.plus.move(0, -dy)
+        return saved
+
+    @staticmethod
+    def _unshift(wi, saved) -> None:
+        if not saved:
+            return
+        wi.rect = saved[0]
+        if len(saved) > 2:
+            wi.minus = saved[1]
+            wi.plus = saved[2]
+
+    def _label(self, x, y, s, size=12, color=S.DIM2):
+        self._labels.append(ui.Label(pygame.Rect(x, y, 10, 10), s, size, color))
+
+    def _ev_script(self) -> str:
+        v = self.level.event(self.cur_event)
+        if isinstance(v, str):
+            return v
+        if isinstance(v, dict):
+            if "story" in v:
+                return L.load_story(str(v["story"]))
+            return v.get("script", "")
+        return ""
+
+    def _ev_mode(self) -> str:
+        v = self.level.event(self.cur_event)
+        if isinstance(v, dict):
+            return v.get("mode", "blocking" if self.cur_event == "on_start" else "ambient")
+        return "blocking" if self.cur_event == "on_start" else "ambient"
+
+    def _pick_event(self, key):
+        if key.startswith("on_row"):
+            self.cur_event = f"on_row:{self.row_n}"
+        else:
+            self.cur_event = key
+        self._build()
+
+    def _set_row_event(self, v):
+        old = self.cur_event
+        self.row_n = int(v)
+        old_val = self.level.data["events"].pop(old, None)
+        self.cur_event = f"on_row:{self.row_n}"
+        if old_val is not None:
+            self.level.data["events"][self.cur_event] = old_val
+        self._build()
+
+    def _set_spawn(self, v):
+        self.spawn_col = int(v)
+
+    def _resize_stage(self, _=None):
+        w = int(self.sw.value)
+        h = int(self.sh.value)
+        if (w, h) == (self.stage.w, self.stage.h):
+            return
+        self.stage.resize(w, h)
+        self.level.data["stage"]["width"] = w
+        self.level.data["stage"]["height"] = h
+        self.spawn_col = max(0, min(w - 1, self.spawn_col))
+        self.st_spawn.value = self.spawn_col
+        self.message = f"舞台已调整为 {w} × {h}"
+        self.message_life = 2.0
+
+    # -------------------------------------------------- 音频
+    def _audio(self):
+        return getattr(self.app, "audio", None)
+
+    def _apply_bgm(self, value):
+        audio = self._audio()
+        if audio and value:
+            audio.bgm(resolve_bgm(value))
+        elif audio:
+            audio.stop_bgm()
+
+    def _set_vol(self, value):
+        audio = self._audio()
+        if audio:
+            audio.set_volume(max(0.0, min(1.0, float(value) / 100.0)))
+
+    def _test_bgm(self):
+        audio = self._audio()
+        name = getattr(self, "c_bgm", None)
+        name = name.value if name else ""
+        if not audio:
+            self._flash("音频不可用")
+            return
+        if not name:
+            audio.stop_bgm()
+            self._flash("已停止")
+            return
+        audio.bgm(resolve_bgm(name))
+        self._flash("正在试听：" + name)
+
+    def _stop_bgm(self):
+        audio = self._audio()
+        if audio:
+            audio.stop_bgm()
+            self._flash("已停止")
+
+    def _test_sfx(self):
+        audio = self._audio()
+        name = getattr(self, "c_snd", None)
+        name = name.value if name else ""
+        if not audio:
+            self._flash("音频不可用")
+            return
+        audio.play(resolve_sfx(name))
+        self._flash("播放：" + name)
+
+    def _insert_cmd(self, cmd: str) -> None:
+        ta = getattr(self, "ta", None)
+        if ta is None:
+            return
+        line = ta.lines[ta.row].rstrip()
+        line = (line + "; " + cmd) if "\\" in line else (line + " \\ " + cmd)
+        ta.lines[ta.row] = line
+        ta.col = len(line)
+        ta.focus = True
+        self.focus = ta
+        pygame.key.start_text_input()
+        self._flash("已插入：" + cmd)
+
+    def _ins_sfx(self):
+        name = getattr(self, "c_snd", None)
+        if name:
+            self._insert_cmd("sfx " + name.value)
+
+    def _ins_bgm(self):
+        name = getattr(self, "c_snd", None)
+        if name:
+            self._insert_cmd("bgm " + name.value)
+
+    def _load_story(self):
+        path = self.c_story.value
+        text = L.load_story(os.path.splitext(path)[0])
+        cur = self.ta.get().strip()
+        self.ta.set((cur + "\n" if cur else "") + text.strip())
+        self.focus = self.ta
+        self.message = f"已载入 {path}"
+        self.message_life = 2.0
+
+    def _sync(self):
+        d = self.level.data
+        d["id"] = self.in_id.value.strip() or "untitled"
+        d["title"] = self.in_title.value.strip() or "未命名演出"
+        d["subtitle"] = self.in_sub.value.strip()
+        d["author"] = self.in_author.value.strip()
+        d["stage"]["width"] = self.stage.w
+        d["stage"]["height"] = self.stage.h
+        d["terrain"] = self.stage.to_rows()
+
+        if self.tab == 0:
+            d["fail"]["text"] = self.in_fail.value.strip() or "败北"
+            texts = {}
+            for key in ("crush", "buried", "stuck", "overflow"):
+                v = getattr(self, "in_ft_" + key, None)
+                if v is not None and v.value.strip():
+                    texts[key] = v.value.strip()
+            d["fail"]["texts"] = texts
+
+        elif self.tab == 1:
+            b = d["blocks"]
+            b["hover"] = self.c_hover.value
+            b["allow_rotation"] = self.t_rot.value
+            b["player_rotate"] = self.t_prot.value \
+                if hasattr(self, "t_prot") else bool(blocks.get("player_rotate", True))
+            b["preview"] = self.t_prev.value
+            b["aim_time"] = [min(self.st_aimlo.value, self.st_aimhi.value),
+                             max(self.st_aimlo.value, self.st_aimhi.value)]
+            b["fall_interval"] = self.st_fall.value
+            b["fall_interval_min"] = min(self.st_fallmin.value, self.st_fall.value)
+            b["ramp"] = self.st_ramp.value
+            pool = [tg.kind_tag for tg in self.pool_toggles if tg.value]
+            b["pool"] = pool or ["O", "I"]
+            p = d["player"]
+            p["move_speed"] = self.st_move.value
+            p["jump_height"] = self.st_jump.value
+            p["gravity"] = self.st_grav.value
+            p["climb"] = int(self.st_climb.value)
+            p["spawn_col"] = int(self.spawn_col)
+            if b["hover"] != "manual":
+                p["spawn_col"] = None if p["spawn_col"] == d["stage"]["width"] // 2 \
+                    else p["spawn_col"]
+            cur = (d.get("audio") or {})
+            d["audio"] = {"bgm": getattr(self, "c_bgm", None).value
+                          if hasattr(self, "c_bgm") else cur.get("bgm", ""),
+                          "volume": int(getattr(self, "st_vol").value)
+                          if hasattr(self, "st_vol") else int(cur.get("volume", 100))}
+
+        elif self.tab == 2:
+            d["goal"]["type"] = self.c_goal.value
+            d["goal"]["row"] = int(self.st_grow.value)
+            d["goal"]["seconds"] = int(self.st_gsec.value)
+            d["goal"]["count"] = int(self.st_gcnt.value)
+            f = d["fail"]
+            f["crush"] = self.t_crush.value
+            f["buried"] = self.t_buried.value
+            f["stuck"] = self.t_stuck.value
+            f["overflow"] = self.t_over.value
+
+        elif self.tab == 3:
+            d["vfx"] = [tg.vfx_name for tg in self.vfx_toggles if tg.value]
+
+        else:
+            txt = self.ta.get()
+            if txt.strip():
+                self.level.data["events"][self.cur_event] = {
+                    "script": txt, "mode": self.c_mode.value}
+            else:
+                self.level.data["events"].pop(self.cur_event, None)
+
+    # ============================================================ 存档操作
+    def save(self):
+        self._sync()
+        path = L.save_level(self.level, None if not self.level.path
+                            else os.path.basename(self.level.path))
+        self.level.path = path
+        L.save_level(self.level)
+        self.app.save.mark_seen(self.level.id)
+        self.app.save.save()
+        self._flash(f"已保存到 content/levels/{os.path.basename(path)}")
+
+    def save_as(self):
+        self._sync()
+        base = L.safe_name(self.level.id) or "level"
+        n = 1
+        fn = base + ".json"
+        while os.path.exists(os.path.join(S.LEVELS_DIR, fn)):
+            n += 1
+            fn = f"{base}_{n}.json"
+        self.level.data["id"] = self.level.id + f"_{n}" if n > 1 else self.level.id
+        self.level.path = None
+        path = L.save_level(self.level, fn)
+        if hasattr(self.app, "menu") and self.app.menu:
+            self.app.menu.reload()
+        self._flash(f"已另存为 {fn}")
+
+    def load_dialog(self):
+        # 简易载入：切换到菜单刷新即可；这里直接读取最近关卡列表首项之外，
+        # 提供一个在当前编辑器中载入其它关卡的快捷入口。
+        levels = L.list_levels()
+        idx = 0
+        for i, lv in enumerate(levels):
+            if self.level.path and lv.path == self.level.path:
+                idx = i
+        nxt = levels[(idx + 1) % len(levels)] if levels else None
+        if nxt:
+            self.level = L.Level(copy.deepcopy(nxt.data), nxt.path)
+            self.stage = Stage(self.level.width, self.level.height)
+            rows = self.level.get("terrain") or []
+            if rows:
+                self.stage.load_rows(rows)
+            self.spawn_col = self.level["player"].get("spawn_col")
+            if self.spawn_col is None:
+                self.spawn_col = self.stage.w // 2
+            self.row_n = max(0, self.level.goal_row + 1)
+            self._build()
+            self._flash(f"已载入 {self.level.title}")
+
+    def test(self):
+        self._sync()
+        from .scenes import PlayScene
+        data = copy.deepcopy(self.level.data)
+        data["terrain"] = self.stage.to_rows()
+        lv = L.Level(data)
+        self.app.editor_scene = self
+        self.app.goto(PlayScene(self.app, lv, preview=True))
+
+    def back(self):
+        from .scenes import MenuScene
+        self.app.goto(MenuScene(self.app))
+
+    def _flash(self, msg):
+        self.message = msg
+        self.message_life = 2.6
+
+    # ============================================================ 事件
+    def enter(self):
+        self.app.editor_scene = self
+        pygame.key.stop_text_input()
+
+    def handle(self, ev):
+        mouse = pygame.mouse.get_pos()
+        w, h = self.app.screen.get_size()
+        rt = self._rects(w, h)
+
+        if ev.type == pygame.MOUSEBUTTONDOWN:
+            if ev.button == 3:
+                self.brush = CH_EMPTY
+                return
+            handled = False
+            # 顶栏与分页按钮：绝对坐标
+            for wi in list(self._top_widgets) + list(self.tab_buttons):
+                if hasattr(wi, "handle_click") and wi.handle_click(ev.pos):
+                    handled = True
+                    break
+            # 面板内容：跟随滚动平移
+            if not handled:
+                local = (ev.pos[0], ev.pos[1] + self.scroll)
+                for wi in self._body_widgets():
+                    if hasattr(wi, "handle_click") and wi.handle_click(local):
+                        handled = True
+                        if isinstance(wi, (ui.Toggle, ui.Choice, ui.Stepper)):
+                            self._after_widget(wi)
+                        break
+            if handled:
+                self._set_focus_widget(ev.pos)
+                return
+            # 画布绘制
+            if rt["canvas"].collidepoint(ev.pos):
+                mods = pygame.key.get_mods()
+                if mods & pygame.KMOD_SHIFT:
+                    self._set_spawn_cell(ev.pos, rt["canvas"])
+                    return
+                self.painting = True
+                self.paint_button = ev.button
+                self._paint(ev.pos, rt["canvas"])
+                self._set_focus_widget(ev.pos)
+                return
+            self._set_focus_widget(ev.pos)
+            return
+
+        if ev.type == pygame.MOUSEBUTTONUP:
+            self.painting = False
+            return
+
+        if ev.type == pygame.MOUSEWHEEL:
+            self.scroll = max(0, min(self.max_scroll(), self.scroll - ev.y * 34))
+            return
+
+        if ev.type == pygame.MOUSEMOTION:
+            self.hover_cell = self._cell_at(ev.pos, rt["canvas"])
+            if self.painting and rt["canvas"].collidepoint(ev.pos):
+                self._paint(ev.pos, rt["canvas"])
+            return
+
+        if ev.type == pygame.KEYDOWN:
+            mods = pygame.key.get_mods()
+            if mods & pygame.KMOD_CTRL:
+                if ev.key == pygame.K_s:
+                    self.save()
+                    return
+                if ev.key == pygame.K_e:
+                    self.test()
+                    return
+            if ev.key == pygame.K_ESCAPE:
+                self.back()
+                return
+            if ev.key == pygame.K_TAB:
+                self._set_tab((self.tab + 1) % 5)
+                return
+            if ev.key == pygame.K_F1:
+                self.focus = None
+                pygame.key.stop_text_input()
+                return
+        # 文本输入
+        if self.focus is not None:
+            self.focus.handle(ev)
+
+    def _set_focus_widget(self, pos):
+        new = None
+        top = self._top_set()
+        for wi in self.inputs:
+            r = wi.rect if wi in top else wi.rect.move(0, -self.scroll)
+            if r.collidepoint(pos):
+                new = wi
+        if new is not self.focus:
+            if self.focus is not None:
+                self.focus.focus = False
+            self.focus = new
+            if new is not None:
+                new.focus = True
+                pygame.key.start_text_input()
+            else:
+                pygame.key.stop_text_input()
+
+    def _after_widget(self, wi):
+        if wi is getattr(self, "sw", None) or wi is getattr(self, "sh", None):
+            self._resize_stage()
+        if wi is getattr(self, "c_goal", None):
+            pass
+
+    def update(self, dt):
+        self.t += dt
+        self.scroll = max(0, min(self.max_scroll(), self.scroll))
+        if self.message_life > 0:
+            self.message_life -= dt
+
+    # ============================================================ 画布
+    def _cell_at(self, pos, canvas):
+        pad = 14
+        area = canvas.inflate(-pad * 2, -pad * 2)
+        total_rows = self.stage.h + R.TOP_ROWS
+        cell = min(area.w // max(self.stage.w, 1), area.h // max(total_rows, 1))
+        cell = max(8, min(cell, 40))
+        w = cell * self.stage.w
+        hh = cell * self.stage.h
+        x = area.x + (area.w - w) // 2
+        y = area.y + (area.h - hh - cell * R.TOP_ROWS) // 2 + cell * R.TOP_ROWS
+        c = (pos[0] - x) // cell
+        r = (pos[1] - y) // cell
+        if 0 <= c < self.stage.w and 0 <= r < self.stage.h:
+            return int(c), int(r)
+        return None
+
+    def _view(self, canvas):
+        pad = 14
+        area = canvas.inflate(-pad * 2, -pad * 2)
+        return R.make_view(area, self.stage.w, self.stage.h, max_cell=40)
+
+    def _set_spawn_cell(self, pos, canvas):
+        cell_pos = self._cell_at(pos, canvas)
+        if not cell_pos:
+            return
+        self.spawn_col = cell_pos[0]
+        if hasattr(self, "st_spawn"):
+            self.st_spawn.value = self.spawn_col
+        self._flash(f"出生列设为 {self.spawn_col}")
+
+    def _paint(self, pos, canvas):
+        cell_pos = self._cell_at(pos, canvas)
+        if not cell_pos:
+            return
+        c, r = cell_pos
+        if self.paint_button == 3:
+            self.stage.grid[r][c] = 0
+        else:
+            ch = self.brush
+            if ch == CH_EMPTY:
+                self.stage.grid[r][c] = 0
+            elif ch == CH_WALL:
+                self.stage.grid[r][c] = -1
+            else:
+                self.stage.grid[r][c] = int(ch)
+
+    # ============================================================ 绘制
+    def draw(self, surf):
+        w, h = surf.get_size()
+        rt = self._rects(w, h)
+        mouse = pygame.mouse.get_pos()
+        surf.fill(S.BG)
+
+        # 顶部
+        for wi in (self.in_id, self.in_title, self.in_sub, self.in_author):
+            wi.draw(surf, mouse)
+        for b in (self.b_save, self.b_saveas, self.b_load, self.b_test, self.b_back):
+            b.draw(surf, mouse)
+        S.draw_text(surf, "演出编辑器", (rt["top"].x - 2, 6), 13, S.DIM2, True)
+
+        # 调色板
+        pal = rt["palette"]
+        S.panel(surf, pal, S.PANEL, S.LINE, 8)
+        x = pal.x + 8
+        for label, ch, color in PALETTE:
+            img = S.font(12).render(label, True, S.TEXT)
+            bwid = max(46, img.get_width() + 26)
+            r = pygame.Rect(x, pal.y + 6, bwid, pal.h - 12)
+            sel = (self.brush == ch)
+            S.round_rect(surf, r, S.blend(S.PANEL2, 1.3 if sel else 1.0), 6)
+            S.round_rect(surf, r, S.ACCENT if sel else S.LINE, 6, 1)
+            if color is not None:
+                sw = pygame.Rect(r.x + 6, r.centery - 6, 12, 12)
+                S.round_rect(surf, sw, color, 3)
+            surf.blit(img, (r.x + 22, r.centery - img.get_height() // 2))
+            if r.collidepoint(mouse) and pygame.mouse.get_pressed()[0]:
+                self.brush = ch
+            x += bwid + 6
+            if x + bwid > pal.right:
+                break
+        S.draw_text(surf, "右键 = 擦除", (x + 8, pal.centery), 11, S.DIM2, anchor="midleft")
+
+        # 画布
+        canvas = rt["canvas"]
+        S.panel(surf, canvas, S.BG2, S.LINE, 10)
+        view, cell = self._view(canvas)
+        fake = self._fake_core()
+        R.draw_stage_bg(surf, fake, view, cell, self.t)
+        R.draw_stage_blocks(surf, fake, view, cell, self.t)
+
+        # 出生点标记
+        sr = self.stage.h - 1
+        for r in range(self.stage.h):
+            if self.stage.grid[r][self.spawn_col] != 0:
+                sr = max(0, r - 1)
+                break
+        mark = pygame.Rect(view.x + self.spawn_col * cell + 2, view.y + sr * cell + 2,
+                           cell - 4, cell - 4)
+        S.round_rect(surf, mark, S.GOOD, 4, 2)
+        S.draw_text(surf, "出生", (mark.centerx, mark.centery), max(9, int(cell * 0.34)),
+                    (10, 20, 14), True, anchor="center")
+
+        # 悬停格
+        if self.hover_cell and canvas.collidepoint(mouse):
+            c, r = self.hover_cell
+            hr = pygame.Rect(view.x + c * cell, view.y + r * cell, cell, cell)
+            pygame.draw.rect(surf, S.ACCENT, hr, 2, border_radius=3)
+
+        # 右侧
+        r = rt["right"]
+        S.panel(surf, r, S.PANEL, S.LINE, 10)
+        for b in self.tab_buttons:
+            b.draw(surf, mouse)
+
+        # 面板内容（可滚动，超出部分裁剪）
+        dy = self.scroll
+        old_clip = surf.get_clip()
+        surf.set_clip(self.body)
+        local_mouse = (mouse[0], mouse[1] + dy)
+        for lbl in self._labels:
+            saved = self._shift(lbl, dy)
+            lbl.draw(surf, local_mouse)
+            self._unshift(lbl, saved)
+        for wi in self._body_widgets():
+            saved = self._shift(wi, dy)
+            wi.draw(surf, local_mouse)
+            self._unshift(wi, saved)
+        surf.set_clip(old_clip)
+        self._draw_scrollbar(surf)
+
+        if self.message_life > 0 and self.message:
+            img = S.font(13, True).render(self.message, True, S.GOOD)
+            tw = img.get_width() + 20
+            bg = pygame.Rect(canvas.centerx - tw // 2, canvas.bottom + 6, tw, 26)
+            S.round_rect(surf, bg, S.PANEL2, 8)
+            S.round_rect(surf, bg, S.GOOD, 8, 1)
+            surf.blit(img, (bg.x + 10, bg.centery - img.get_height() // 2))
+
+        ui.draw_hint_bar(surf, pygame.Rect(16, h - 30, max(200, r.x - 40), 22), [
+            ("Ctrl+S", "保存"), ("Ctrl+E", "试演"), ("Tab", "切换分页"),
+            ("右键", "擦除"), ("Shift+点击", "出生列"), ("Esc", "返回"),
+        ], 11)
+
+    def _draw_scrollbar(self, surf) -> None:
+        mx = self.max_scroll()
+        if mx <= 0:
+            return
+        body = self.body
+        track = pygame.Rect(body.right - 5, body.y + 2, 4, body.h - 4)
+        S.round_rect(surf, track, S.PANEL3, 2)
+        k = body.h / (body.h + mx)
+        th = max(24, int(track.h * k))
+        ty = track.y + int((track.h - th) * (self.scroll / mx))
+        S.round_rect(surf, pygame.Rect(track.x, ty, track.w, th), S.ACCENT, 2)
+
+    def _fake_core(self):
+        """给 render 用的轻量替身，仅含 level / stage 字段。"""
+
+        class _C:
+            pass
+
+        c = _C()
+        c.level = self.level
+        c.stage = self.stage
+        return c

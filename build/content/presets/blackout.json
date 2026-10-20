@@ -1,0 +1,7 @@
+{
+  "id": "blackout",
+  "name": "停电剧场",
+  "desc": "没有下一块预览，只剩暗角与噪点。",
+  "blocks": { "preview": false, "aim_time": [3.0, 7.0] },
+  "vfx": ["vignette", "glitch", "stars"]
+}

@@ -1,0 +1,16 @@
+# 敏感数据
+
+.workbuddy/*
+
+# 涉及提示词机密，不可泄漏。
+
+PRD.md
+preset/
+rule/
+story/
+
+# 产出文件
+
+build/smoke_test.py
+build/engine/__pycache__/
+build/启动游戏.bat

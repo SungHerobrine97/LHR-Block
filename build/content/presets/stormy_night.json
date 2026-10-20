@@ -1,0 +1,13 @@
+{
+  "id": "stormy_night",
+  "name": "雨夜突袭",
+  "desc": "倒计时更短、下落更快，风雨扑面而来。",
+  "blocks": {
+    "aim_time": [2.0, 5.0],
+    "fall_interval": 0.22,
+    "fall_interval_min": 0.1,
+    "ramp": 0.975,
+    "hover": "follow"
+  },
+  "vfx": ["rain", "shake"]
+}

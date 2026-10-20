@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "created": 0,
+  "last_level": "gauntlet",
+  "levels": {
+    "tutorial": {
+      "cleared": false,
+      "best_row": 11,
+      "attempts": 1,
+      "clears": 0,
+      "best_ms": null
+    },
+    "default": {
+      "cleared": false,
+      "best_row": 19,
+      "attempts": 1,
+      "clears": 0,
+      "best_ms": null
+    },
+    "gauntlet": {
+      "cleared": false,
+      "best_row": 18,
+      "attempts": 3,
+      "clears": 0,
+      "best_ms": null
+    },
+    "cursed_stage": {
+      "cleared": false,
+      "best_row": 17,
+      "attempts": 1,
+      "clears": 0,
+      "best_ms": null
+    }
+  },
+  "seen": [
+    "__smoke_tmp"
+  ],
+  "options": {
+    "sound": true,
+    "show_ghost": true,
+    "volume": 80
+  }
+}

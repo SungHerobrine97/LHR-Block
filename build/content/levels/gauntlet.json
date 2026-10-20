@@ -1,0 +1,83 @@
+{
+  "id": "gauntlet",
+  "title": "高塔竞演",
+  "subtitle": "12 格宽、22 格高，方块不再跟人跑。",
+  "author": "系统",
+  "stage": {
+    "width": 12,
+    "height": 22
+  },
+  "blocks": {
+    "pool": [
+      "I",
+      "O",
+      "T",
+      "S",
+      "Z",
+      "J",
+      "L"
+    ],
+    "allow_rotation": true,
+    "hover": "manual",
+    "aim_time": [
+      2.0,
+      6.0
+    ],
+    "fall_interval": 0.24,
+    "fall_interval_min": 0.1,
+    "ramp": 0.978,
+    "preview": true
+  },
+  "player": {
+    "spawn_col": null,
+    "move_speed": 6.8,
+    "jump_height": 2.6,
+    "gravity": 34.0,
+    "climb": 1,
+    "air_control": 1.0
+  },
+  "goal": {
+    "type": "reach_row",
+    "row": 0
+  },
+  "fail": {
+    "text": "演出中断。",
+    "texts": {
+      "crush": "方块从视野死角落下。",
+      "buried": "你自己把自己封死了。",
+      "overflow": "塔顶已经碰到天幕。"
+    },
+    "crush": true,
+    "buried": true,
+    "stuck": false,
+    "overflow": true
+  },
+  "vfx": [
+    "scanline",
+    "rain"
+  ],
+  "events": {
+    "on_start": {
+      "mode": "blocking",
+      "script": "主持: 这一场，方块不会追着你跑。\n主持: 用 ← → 摆布它们，用 A D 挪动你自己。\n主持: 两个都要顾，这就是高塔。"
+    },
+    "on_row:11": {
+      "mode": "ambient",
+      "script": "主持: 过半了，灯光再亮一点。 \\ vfx scanline off"
+    },
+    "on_row:5": {
+      "mode": "ambient",
+      "script": ":塔身开始摇晃。 \\ shake 7"
+    }
+  },
+  "terrain": [],
+  "tags": [
+    "挑战",
+    "手动瞄准"
+  ],
+  "order": 2,
+  "audio": {
+    "bgm": "tense",
+    "volume": 60
+  }
+}

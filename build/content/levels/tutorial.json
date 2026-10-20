@@ -1,0 +1,88 @@
+{
+  "id": "tutorial",
+  "title": "教学：矮舞台",
+  "subtitle": "6 行高度的小台子，先熟悉瞄准与跳跃。",
+  "author": "系统",
+  "stage": {
+    "width": 8,
+    "height": 12
+  },
+  "blocks": {
+    "pool": [
+      "I",
+      "O",
+      "T",
+      "L"
+    ],
+    "allow_rotation": true,
+    "hover": "follow",
+    "aim_time": [
+      4.0,
+      8.5
+    ],
+    "fall_interval": 0.36,
+    "fall_interval_min": 0.18,
+    "ramp": 0.99,
+    "preview": true
+  },
+  "player": {
+    "spawn_col": 3,
+    "move_speed": 6.6,
+    "jump_height": 2.4,
+    "gravity": 32.0,
+    "climb": 1,
+    "air_control": 1.0
+  },
+  "goal": {
+    "type": "reach_row",
+    "row": 2,
+    "seconds": 60,
+    "count": 20
+  },
+  "fail": {
+    "text": "被砸扁了，再来一次吧。",
+    "texts": {
+      "crush": "这一下结结实实砸在头上。",
+      "buried": "被自己的台阶困住了。"
+    },
+    "crush": true,
+    "buried": true,
+    "stuck": false,
+    "overflow": false
+  },
+  "vfx": [
+    "stars"
+  ],
+  "audio": {
+    "bgm": "waltz",
+    "volume": 50
+  },
+  "events": {
+    "on_start": {
+      "script": "教练: 这里是练习台，方块落得很慢。\n教练: 它会一直跟着你站的位置，倒计时结束才真正落下。\n教练: 所以——先把方块带到你想堆的地方，再跑开。\n:爬到第 1 行就算过关。",
+      "mode": "blocking"
+    },
+    "on_win": {
+      "mode": "blocking",
+      "script": "教练: 不错，去真正的舞台吧。"
+    }
+  },
+  "terrain": [
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........"
+  ],
+  "tags": [
+    "教学"
+  ],
+  "order": 0
+}

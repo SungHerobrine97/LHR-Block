@@ -1,0 +1,6 @@
+{
+  "id": "directional",
+  "name": "我来瞄准",
+  "desc": "方块不再跟随小人：← → 控制方块，A D 控制小人。",
+  "blocks": { "hover": "manual" }
+}

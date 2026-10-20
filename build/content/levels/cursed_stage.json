@@ -1,0 +1,108 @@
+{
+  "id": "cursed_stage",
+  "title": "被诅咒的第三幕",
+  "subtitle": "胜负由剧本说了算：能不能赢，看台词走到哪。",
+  "author": "剧团 · 无名",
+  "stage": {
+    "width": 10,
+    "height": 18
+  },
+  "blocks": {
+    "pool": [
+      "T",
+      "S",
+      "Z",
+      "J",
+      "L"
+    ],
+    "allow_rotation": true,
+    "hover": "follow",
+    "aim_time": [
+      2.0,
+      5.0
+    ],
+    "fall_interval": 0.26,
+    "fall_interval_min": 0.12,
+    "ramp": 0.98,
+    "preview": false
+  },
+  "player": {
+    "spawn_col": 4,
+    "move_speed": 6.4,
+    "jump_height": 2.6,
+    "gravity": 34.0,
+    "climb": 1,
+    "air_control": 1.0
+  },
+  "goal": {
+    "type": "none",
+    "row": 0,
+    "seconds": 60,
+    "count": 20
+  },
+  "fail": {
+    "text": "第三幕，落幕。",
+    "texts": {
+      "crush": "诅咒应验：你被砸中了。",
+      "buried": "舞台把你吞了下去。"
+    },
+    "crush": true,
+    "buried": true,
+    "stuck": false,
+    "overflow": false
+  },
+  "vfx": [
+    "vignette"
+  ],
+  "events": {
+    "on_start": {
+      "script": "旁白官: 第三幕开演。这一幕没有预设的终点。 \\ bgm 诡异 0.7; sfx 铜锣\n旁白官: 爬到第 3 行，看看会发生什么。",
+      "mode": "blocking"
+    },
+    "on_row:9": {
+      "mode": "blocking",
+      "script": "女主角: 再往上一步，灯就要灭了。 \\ vfx vignette on; sfx 雷声\n:黑暗收紧了边界。"
+    },
+    "on_row:5": {
+      "mode": "ambient",
+      "script": "女主角: 别停下——我替你挡一块！ \\ drop 2"
+    },
+    "on_row:3": {
+      "mode": "blocking",
+      "script": "女主角: 就是现在，跳上去！ \\ vfx vignette off; sfx 铃声\n旁白官: 结局由你自己写。 \\ delay 400 \\ win"
+    },
+    "on_lose": {
+      "mode": "blocking",
+      "script": "旁白官: 落幕。观众安静地离场。"
+    }
+  },
+  "terrain": [
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    ".........."
+  ],
+  "tags": [
+    "剧情驱动",
+    "特色玩法"
+  ],
+  "order": 3,
+  "audio": {
+    "bgm": "ominous",
+    "volume": 70
+  }
+}
