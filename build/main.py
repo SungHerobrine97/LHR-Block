@@ -70,7 +70,13 @@ class App:
                         self.scene._build()
                     continue
                 if self.scene is not None:
-                    self.scene.handle(ev)
+                    try:
+                        self.scene.handle(ev)
+                    except Exception:      # noqa: BLE001
+                        # 单次事件处理出错不应该让整个游戏退出
+                        import traceback
+                        traceback.print_exc()
+                        self.toast("操作出错，已忽略", S.BAD)
             if not self.running:
                 break
             if self.scene is not None:

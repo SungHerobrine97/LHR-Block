@@ -160,14 +160,15 @@ class EditorScene:
 
     def _build_tab(self, body):
         self._labels = []
+        # 先断开焦点引用：它可能正指向下面要删掉的控件
+        if getattr(self, "focus", None) is not None:
+            self.focus = None
+            pygame.key.stop_text_input()
         # 清掉上一个分页遗留的控件，避免叠加绘制
         from .ui import Widget as _W
         for name, val in list(vars(self).items()):
             if isinstance(val, _W):
                 delattr(self, name)
-        if self.focus is not None:
-            self.focus = None
-            pygame.key.stop_text_input()
         self.pool_toggles = []
         self.vfx_toggles = []
         self.event_rows = []
@@ -768,16 +769,27 @@ class EditorScene:
     def _set_spawn(self, v):
         self.spawn_col = int(v)
 
+    def _val(self, name, default=None):
+        """安全读取某个控件的值：控件可能属于别的分页（尚未创建）。"""
+        w = getattr(self, name, None)
+        if w is None:
+            return default
+        return getattr(w, "value", default)
+
     def _resize_stage(self, _=None):
-        w = int(self.sw.value)
-        h = int(self.sh.value)
+        w = int(self._val("sw", self.stage.w))
+        h = int(self._val("sh", self.stage.h))
+        w = max(4, min(30, w))
+        h = max(6, min(40, h))
         if (w, h) == (self.stage.w, self.stage.h):
             return
         self.stage.resize(w, h)
         self.level.data["stage"]["width"] = w
         self.level.data["stage"]["height"] = h
         self.spawn_col = max(0, min(w - 1, self.spawn_col))
-        self.st_spawn.value = self.spawn_col
+        # 出生列步进器只在「玩法」页存在，这里必须容错
+        if hasattr(self, "st_spawn"):
+            self.st_spawn.value = self.spawn_col
         self.message = f"舞台已调整为 {w} × {h}"
         self.message_life = 2.0
 
@@ -858,6 +870,8 @@ class EditorScene:
         self._insert_cmd(f"drop {kind.value} {int(col.value)}")
 
     def _load_story(self):
+        if not hasattr(self, "c_story") or not hasattr(self, "ta"):
+            return
         path = self.c_story.value
         text = L.load_story(os.path.splitext(path)[0])
         cur = self.ta.get().strip()
@@ -876,8 +890,8 @@ class EditorScene:
         d["stage"]["height"] = self.stage.h
         d["terrain"] = self.stage.to_rows()
 
-        if self.tab == 0:
-            d["fail"]["text"] = self.in_fail.value.strip() or "败北"
+        if self.tab == TAB_BASIC:
+            d["fail"]["text"] = str(self._val("in_fail", "") or "").strip() or "败北"
             texts = {}
             for key in ("crush", "buried", "stuck", "overflow"):
                 v = getattr(self, "in_ft_" + key, None)
@@ -885,38 +899,36 @@ class EditorScene:
                     texts[key] = v.value.strip()
             d["fail"]["texts"] = texts
 
-        elif self.tab == 1:
+        elif self.tab == TAB_PLAY:
             b = d["blocks"]
-            b["hover"] = self.c_hover.value
-            b["allow_rotation"] = self.t_rot.value
-            b["player_rotate"] = self.t_prot.value \
-                if hasattr(self, "t_prot") else bool(b.get("player_rotate", True))
-            b["preview"] = self.t_prev.value
-            b["concurrent"] = int(getattr(self, "st_conc").value) \
-                if hasattr(self, "st_conc") else int(b.get("concurrent", 1))
-            b["spawn_gap"] = float(getattr(self, "st_gap").value) \
-                if hasattr(self, "st_gap") else float(b.get("spawn_gap", 0.35))
-            b["aim_time"] = [min(self.st_aimlo.value, self.st_aimhi.value),
-                             max(self.st_aimlo.value, self.st_aimhi.value)]
-            b["fall_interval"] = self.st_fall.value
-            b["fall_interval_min"] = min(self.st_fallmin.value, self.st_fall.value)
-            b["ramp"] = self.st_ramp.value
-            pool = [tg.kind_tag for tg in self.pool_toggles if tg.value]
-            b["pool"] = pool or ["O", "I"]
+            b["hover"] = self._val("c_hover", b.get("hover", "follow"))
+            b["allow_rotation"] = bool(self._val("t_rot", True))
+            b["player_rotate"] = bool(self._val("t_prot", True))
+            b["preview"] = bool(self._val("t_prev", True))
+            b["concurrent"] = max(1, min(8, int(self._val("st_conc", 1))))
+            b["spawn_gap"] = max(0.05, min(5.0, float(self._val("st_gap", 0.35))))
+            lo = float(self._val("st_aimlo", 2.0))
+            hi = float(self._val("st_aimhi", 9.9))
+            b["aim_time"] = [min(lo, hi), max(lo, hi)]
+            b["fall_interval"] = float(self._val("st_fall", 0.3))
+            b["fall_interval_min"] = min(float(self._val("st_fallmin", 0.1)),
+                                         b["fall_interval"])
+            b["ramp"] = float(self._val("st_ramp", 0.985))
+            pool = [tg.kind_tag for tg in getattr(self, "pool_toggles", []) if tg.value]
+            if pool:
+                b["pool"] = pool
             p = d["player"]
-            p["move_speed"] = self.st_move.value
-            p["jump_height"] = self.st_jump.value
-            p["gravity"] = self.st_grav.value
-            p["climb"] = int(self.st_climb.value)
+            p["move_speed"] = float(self._val("st_move", p.get("move_speed", 6.4)))
+            p["jump_height"] = float(self._val("st_jump", p.get("jump_height", 2.6)))
+            p["gravity"] = float(self._val("st_grav", p.get("gravity", 34.0)))
+            p["climb"] = int(self._val("st_climb", p.get("climb", 1)))
             p["spawn_col"] = int(self.spawn_col)
             if b["hover"] != "manual":
                 p["spawn_col"] = None if p["spawn_col"] == d["stage"]["width"] // 2 \
                     else p["spawn_col"]
             cur = (d.get("audio") or {})
-            d["audio"] = {"bgm": getattr(self, "c_bgm", None).value
-                          if hasattr(self, "c_bgm") else cur.get("bgm", ""),
-                          "volume": int(getattr(self, "st_vol").value)
-                          if hasattr(self, "st_vol") else int(cur.get("volume", 100))}
+            d["audio"] = {"bgm": self._val("c_bgm", cur.get("bgm", "")),
+                          "volume": int(self._val("st_vol", cur.get("volume", 100)))}
 
         elif self.tab == TAB_SHAPE:
             if hasattr(self, "in_shname"):
@@ -925,15 +937,15 @@ class EditorScene:
                 self._write_shape_color(self.c_shcolor.value)
 
         elif self.tab == TAB_GOAL:
-            d["goal"]["type"] = self.c_goal.value
-            d["goal"]["row"] = int(self.st_grow.value)
-            d["goal"]["seconds"] = int(self.st_gsec.value)
-            d["goal"]["count"] = int(self.st_gcnt.value)
+            d["goal"]["type"] = self._val("c_goal", d["goal"].get("type", "reach_row"))
+            d["goal"]["row"] = int(self._val("st_grow", d["goal"].get("row", 0)))
+            d["goal"]["seconds"] = int(self._val("st_gsec", d["goal"].get("seconds", 60)))
+            d["goal"]["count"] = int(self._val("st_gcnt", d["goal"].get("count", 20)))
             f = d["fail"]
-            f["crush"] = self.t_crush.value
-            f["buried"] = self.t_buried.value
-            f["stuck"] = self.t_stuck.value
-            f["overflow"] = self.t_over.value
+            f["crush"] = bool(self._val("t_crush", f.get("crush", True)))
+            f["buried"] = bool(self._val("t_buried", f.get("buried", True)))
+            f["stuck"] = bool(self._val("t_stuck", f.get("stuck", False)))
+            f["overflow"] = bool(self._val("t_over", f.get("overflow", False)))
 
         elif self.tab == TAB_VFX:
             d["vfx"] = [tg.vfx_name for tg in self.vfx_toggles if tg.value]
@@ -1094,6 +1106,15 @@ class EditorScene:
         pygame.key.stop_text_input()
 
     def handle(self, ev):
+        """统一兜底：任何控件异常都不应让整个程序退出。"""
+        try:
+            self._handle(ev)
+        except Exception as exc:      # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            self._flash(f"操作出错（已忽略）：{type(exc).__name__}: {exc}")
+
+    def _handle(self, ev):
         mouse = pygame.mouse.get_pos()
         w, h = self.app.screen.get_size()
         rt = self._rects(w, h)
@@ -1168,7 +1189,7 @@ class EditorScene:
                 pygame.key.stop_text_input()
                 return
         # 文本输入
-        if self.focus is not None:
+        if getattr(self, "focus", None) is not None:
             self.focus.handle(ev)
 
     def _set_focus_widget(self, pos):
@@ -1178,9 +1199,10 @@ class EditorScene:
             r = wi.rect if wi in top else wi.rect.move(0, -self.scroll)
             if r.collidepoint(pos):
                 new = wi
-        if new is not self.focus:
-            if self.focus is not None:
-                self.focus.focus = False
+        old = getattr(self, "focus", None)
+        if new is not old:
+            if old is not None:
+                old.focus = False
             self.focus = new
             if new is not None:
                 new.focus = True
