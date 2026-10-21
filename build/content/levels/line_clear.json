@@ -1,0 +1,131 @@
+{
+  "id": "line_clear",
+  "title": "清道夫",
+  "subtitle": "填满一行就消掉——这次不比谁爬得高，比谁清得多",
+  "author": "系统",
+  "stage": {
+    "width": 8,
+    "height": 14
+  },
+  "blocks": {
+    "pool": [
+      "I",
+      "O",
+      "T",
+      "S",
+      "Z",
+      "J",
+      "L"
+    ],
+    "allow_rotation": true,
+    "player_rotate": true,
+    "hover": "follow",
+    "concurrent": 1,
+    "spawn_gap": 0.35,
+    "quick_drop": true,
+    "line_clear": true,
+    "aim_time": [
+      2.5,
+      6.0
+    ],
+    "fall_interval": 0.32,
+    "fall_interval_min": 0.14,
+    "ramp": 0.99,
+    "preview": true
+  },
+  "player": {
+    "spawn_col": null,
+    "move_speed": 6.4,
+    "jump_height": 2.6,
+    "gravity": 34.0,
+    "climb": 1,
+    "air_control": 1.0
+  },
+  "goal": {
+    "type": "clear_lines",
+    "row": 0,
+    "seconds": 60,
+    "count": 20,
+    "clear": 2
+  },
+  "fail": {
+    "text": "败北",
+    "texts": {
+      "crush": "被砸中了。",
+      "buried": "被困住了。",
+      "stuck": "爬不上去了。",
+      "overflow": "舞台满了。"
+    },
+    "crush": true,
+    "buried": true,
+    "stuck": false,
+    "overflow": false
+  },
+  "vfx": [
+    "embers",
+    "pulse"
+  ],
+  "shapes": [],
+  "events": [
+    {
+      "trigger": "on_start",
+      "param": null,
+      "mode": "blocking",
+      "once": true,
+      "script": "司仪: 这一场开了「填满即消行」。\n司仪: 底下两行各差最右边一格——把方块竖着塞进那一列，两行会一起消掉。\n司仪: 按 X 把长条转成竖的，再站到最右边把它引过去。\n:消掉两行就算过关。"
+    },
+    {
+      "trigger": "on_line_clear",
+      "param": null,
+      "mode": "ambient",
+      "once": false,
+      "script": "司仪: 清掉了。 \\ sfx sparkle"
+    },
+    {
+      "trigger": "on_clear_count",
+      "param": 2,
+      "mode": "ambient",
+      "once": true,
+      "script": "司仪: 两行，够了。 \\ sfx coin"
+    },
+    {
+      "trigger": "on_win",
+      "param": null,
+      "mode": "blocking",
+      "once": true,
+      "script": "司仪: 六行，干净利落。"
+    },
+    {
+      "trigger": "on_lose",
+      "param": null,
+      "mode": "ambient",
+      "once": true,
+      "script": "司仪: 消行会把脚下的台阶抽走，站稳了再消。"
+    }
+  ],
+  "terrain": [
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
+    "1111111.",
+    "1111111."
+  ],
+  "tags": [
+    "示例",
+    "消行"
+  ],
+  "order": 7,
+  "audio": {
+    "bgm": "march",
+    "volume": 60
+  }
+}

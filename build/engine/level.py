@@ -21,6 +21,8 @@ DEFAULTS: Dict[str, Any] = {
         "hover": "follow",          # follow | random | manual
         "concurrent": 1,            # 舞台上同时存在的方块数（1 = 一次一块）
         "spawn_gap": 0.35,          # 多块模式下两块之间的生成间隔（秒）
+        "quick_drop": True,         # 玩家能否用 ↓ / S 让方块无视倒计时立即下落
+        "line_clear": False,        # 填满一行即消行（默认关，以免破坏攀爬节奏）
         "aim_time": [2.0, 9.9],     # 倒计时范围（<10 秒，最小 2 秒）
         "fall_interval": 0.30,      # 每格下落耗时
         "fall_interval_min": 0.10,
@@ -35,7 +37,8 @@ DEFAULTS: Dict[str, Any] = {
         "climb": 1,
         "air_control": 1.0,
     },
-    "goal": {"type": "reach_row", "row": 0, "seconds": 60, "count": 20},
+    "goal": {"type": "reach_row", "row": 0, "seconds": 60, "count": 20,
+             "clear": 6},          # clear：胜利条件为「消除 N 行」时的行数
     "fail": {
         "text": "败北",
         "texts": {},
@@ -63,6 +66,8 @@ TRIGGERS = [
     ("on_height", "最高抵达第 N 行", "int"),
     ("on_time", "开演后第 N 秒", "float"),
     ("on_lock_count", "已固化 N 块", "int"),
+    ("on_line_clear", "消行时（本次至少 N 行）", "int"),
+    ("on_clear_count", "累计消除 N 行", "int"),
     ("on_piece", "出现某个形状时", "shape"),
     ("on_key", "玩家按下某键时", "key"),
     ("on_win", "胜利时", None),
@@ -329,6 +334,7 @@ class Level:
             "reach_row": f"到达第 {self.goal_row} 行",
             "survive": f"坚持 {int(g.get('seconds', 60))} 秒",
             "lock_count": f"承受 {int(g.get('count', 20))} 块",
+            "clear_lines": f"消除 {int(g.get('clear', 6))} 行",
             "none": "由剧本来定",
         }
         return mapping.get(g.get("type"), "到达舞台顶部")

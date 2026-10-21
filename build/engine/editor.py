@@ -22,7 +22,8 @@ PALETTE = [("空", CH_EMPTY, None), ("墙", CH_WALL, S.WALL_COLOR)] + \
 
 HOVER_LABELS = {"follow": "跟随小人", "manual": "玩家控制", "random": "随机落点"}
 GOAL_LABELS = {"reach_row": "抵达顶层行", "survive": "坚持时间",
-               "lock_count": "承受方块数", "none": "由剧本决定"}
+               "lock_count": "承受方块数", "clear_lines": "消除行数",
+               "none": "由剧本决定"}
 
 TABS = ["基本", "玩法", "形状", "目标/失败", "VFX", "事件/剧本"]
 TAB_BASIC, TAB_PLAY, TAB_SHAPE, TAB_GOAL, TAB_VFX, TAB_EVENT = range(len(TABS))
@@ -224,6 +225,11 @@ class EditorScene:
                                    bool(blocks.get("allow_rotation", True)))
             self.t_prot = ui.Toggle(row(26), "玩家可旋转方块（X 键）",
                                     bool(blocks.get("player_rotate", True)))
+            self.t_quick = ui.Toggle(row(26), "玩家可催落方块（↓ / S，无视倒计时）",
+                                     bool(blocks.get("quick_drop", True)))
+            self.t_line = ui.Toggle(row(26), "填满一行即消行",
+                                    bool(blocks.get("line_clear", False)),
+                                    hint="开启后台阶会被消掉")
             self.t_prev = ui.Toggle(row(26), "显示下一块预览",
                                     bool(blocks.get("preview", True)))
             self.st_conc = ui.Stepper(row(26), "同时在场的方块数",
@@ -353,6 +359,8 @@ class EditorScene:
                                       5, 600, 5, None, "{:g}")
             self.st_gcnt = ui.Stepper(row(26), "承受方块数", int(goal.get("count", 20)),
                                       1, 200, 1, None, "{:g}")
+            self.st_gclear = ui.Stepper(row(26), "消除行数", int(goal.get("clear", 6)),
+                                        1, 200, 1, None, "{:g}")
             y += 10
             self._label(cx, y, "失败条件（命中即立即终止演出）"); y += 16
             self.t_crush = ui.Toggle(row(26), "被下落的方块命中",
@@ -904,6 +912,8 @@ class EditorScene:
             b["hover"] = self._val("c_hover", b.get("hover", "follow"))
             b["allow_rotation"] = bool(self._val("t_rot", True))
             b["player_rotate"] = bool(self._val("t_prot", True))
+            b["quick_drop"] = bool(self._val("t_quick", True))
+            b["line_clear"] = bool(self._val("t_line", False))
             b["preview"] = bool(self._val("t_prev", True))
             b["concurrent"] = max(1, min(8, int(self._val("st_conc", 1))))
             b["spawn_gap"] = max(0.05, min(5.0, float(self._val("st_gap", 0.35))))
@@ -941,6 +951,7 @@ class EditorScene:
             d["goal"]["row"] = int(self._val("st_grow", d["goal"].get("row", 0)))
             d["goal"]["seconds"] = int(self._val("st_gsec", d["goal"].get("seconds", 60)))
             d["goal"]["count"] = int(self._val("st_gcnt", d["goal"].get("count", 20)))
+            d["goal"]["clear"] = int(self._val("st_gclear", d["goal"].get("clear", 6)))
             f = d["fail"]
             f["crush"] = bool(self._val("t_crush", f.get("crush", True)))
             f["buried"] = bool(self._val("t_buried", f.get("buried", True)))

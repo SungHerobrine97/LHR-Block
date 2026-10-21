@@ -84,6 +84,27 @@ class Stage:
             row += 1
         return row
 
+    def full_rows(self) -> List[int]:
+        """被实心格填满的行（含墙的行不算，避免把关卡地形消掉）。"""
+        out = []
+        for r in range(self.h):
+            row = self.grid[r]
+            if any(v == WALL for v in row):
+                continue
+            if all(v != EMPTY for v in row):
+                out.append(r)
+        return out
+
+    def clear_rows(self, rows) -> None:
+        """删除指定行，其上方整体下落一格，顶部补空行。"""
+        drop = set(int(r) for r in (rows or []))
+        if not drop:
+            return
+        keep = [list(self.grid[r]) for r in range(self.h) if r not in drop]
+        while len(keep) < self.h:
+            keep.insert(0, [EMPTY] * self.w)
+        self.grid = keep
+
     def highest_solid_row(self) -> int:
         for r in range(self.h):
             if any(v != EMPTY for v in self.grid[r]):

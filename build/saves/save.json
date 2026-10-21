@@ -1,53 +1,68 @@
 {
   "version": 1,
   "created": 0,
-  "last_level": "multi_blocks",
+  "last_level": "line_clear",
   "levels": {
     "tutorial": {
       "cleared": false,
-      "best_row": null,
-      "attempts": 0,
+      "best_row": 11,
+      "attempts": 1,
       "clears": 0,
       "best_ms": null
     },
     "default": {
       "cleared": false,
-      "best_row": null,
-      "attempts": 0,
+      "best_row": 19,
+      "attempts": 4,
       "clears": 0,
       "best_ms": null
     },
     "gauntlet": {
       "cleared": false,
-      "best_row": null,
-      "attempts": 0,
+      "best_row": 21,
+      "attempts": 1,
       "clears": 0,
       "best_ms": null
     },
     "cursed_stage": {
       "cleared": false,
-      "best_row": null,
-      "attempts": 0,
+      "best_row": 17,
+      "attempts": 1,
       "clears": 0,
       "best_ms": null
     },
     "shape_demo": {
       "cleared": false,
-      "best_row": null,
-      "attempts": 0,
+      "best_row": 17,
+      "attempts": 1,
       "clears": 0,
       "best_ms": null
     },
     "multi_blocks": {
       "cleared": false,
-      "best_row": 5,
+      "best_row": 19,
+      "attempts": 1,
+      "clears": 0,
+      "best_ms": null
+    },
+    "line_clear": {
+      "cleared": true,
+      "best_row": 8,
+      "attempts": 3,
+      "clears": 1,
+      "best_ms": 8094
+    },
+    "test_rot_key": {
+      "cleared": false,
+      "best_row": 11,
       "attempts": 1,
       "clears": 0,
       "best_ms": null
     }
   },
   "seen": [
-    "__tmp_sync"
+    "__smoke_tmp",
+    "__tmp_resize"
   ],
   "options": {
     "sound": true,

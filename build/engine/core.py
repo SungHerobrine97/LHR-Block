@@ -11,16 +11,18 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from . import level as L
 from .actor import Actor
+from .actor import H as AH
+from .actor import W as AW
 from .audio import resolve_bgm, resolve_sfx
 from .pieces import Bag, Piece, is_known, rotations_of
 from .save import SaveData
 from .scriptvm import Runner, Stmt, split_args
-from .stage import Stage
+from .stage import EMPTY, WALL, Stage, touching
 from .vfx import VFXManager
 
 AIM, FALL, OVER = "aim", "fall", "over"
 
-GOAL_TYPES = ("reach_row", "survive", "lock_count", "none")
+GOAL_TYPES = ("reach_row", "survive", "lock_count", "clear_lines", "none")
 
 
 class Core:
@@ -85,6 +87,7 @@ class Core:
         self.spawn_delay = 0.28
         self.elapsed = 0.0
         self.lock_count = 0
+        self.cleared_lines = 0
         self.result: Optional[dict] = None
         self.fired: Set[str] = set()
         self.drop_queue = 0
@@ -97,6 +100,7 @@ class Core:
         self.freeze_timer = 0.0
         self._jump_latch = False
         self._rot_latch = False
+        self._drop_latch = False
         self.rotations = 0
         if self.save:
             self.save.record_attempt(self.level.id)
@@ -211,6 +215,12 @@ class Core:
             self._try_rotate(1)
         self._rot_latch = want_rot
 
+        # 立即下落（上升沿）：无视剩余倒计时，让正在瞄准的那块马上开始落
+        want_drop = bool(inp.get("drop"))
+        if want_drop and not self._drop_latch:
+            self._quick_drop()
+        self._drop_latch = want_drop
+
         for p in list(self.pieces):
             if p not in self.pieces:
                 continue
@@ -284,6 +294,10 @@ class Core:
         p.aim_total = self.rng.uniform(lo, hi)
         p.aim_t = p.aim_total
         p.fall_t = 0.0
+        if forced and forced.get("quick"):
+            # 剧本要求「无视倒计时」：立刻开始落，但保持正常下落速度
+            p.aim_t = 0.0
+            p.instant = False
         self.pieces.append(p)
 
         if not self._place_at_spawn(p):
@@ -382,6 +396,29 @@ class Core:
         if self.audio:
             self.audio.play("buzz", 0.35)
         return False
+
+    # ================================================== 立即下落
+    @property
+    def can_quick_drop(self) -> bool:
+        """当前是否有可以被「立即下落」催下去的方块。"""
+        return (self.result is None and self.aiming is not None
+                and bool(self.level["blocks"].get("quick_drop", True)))
+
+    def _quick_drop(self) -> bool:
+        """玩家主动催落：无视剩余倒计时，让正在瞄准的方块立刻开始下落。
+
+        只跳过倒计时，下落速度不变（仍能看清它砸向哪里）。
+        """
+        p = self.aiming
+        if p is None or self.result:
+            return False
+        if not bool(self.level["blocks"].get("quick_drop", True)):
+            return False
+        p.aim_t = 0.0
+        self._begin_fall(p)
+        if self.audio:
+            self.audio.play("whoosh", 0.5)
+        return True
 
     def _aim_range(self) -> Tuple[float, float]:
         lo, hi = (self.level["blocks"].get("aim_time") or [2.0, 9.9])[:2]
@@ -515,10 +552,61 @@ class Core:
         self.cur_interval = max(lo, self.cur_interval * ramp)
 
         self._fire_event("on_lock")
-        self._check_triggers()      # 固化数 / 时间等条件型事件立刻生效
+        self._clear_lines()         # 填满的行在这里消掉
+        self._check_triggers()      # 固化数 / 时间 / 累计消行等条件型事件立刻生效
         self._check_lose()
         if not self.result:
             self._check_win()
+
+    # ================================================== 消行
+    @property
+    def line_clear_on(self) -> bool:
+        return bool(self.level["blocks"].get("line_clear", False))
+
+    def _clear_lines(self) -> int:
+        """锁定后检查满行并消除，上方整体下落一格。
+
+        返回本次消除的行数。未开启该玩法时恒为 0。
+        """
+        if not self.line_clear_on or self.result:
+            return 0
+        full = self.stage.full_rows()
+        if not full:
+            return 0
+        n = len(full)
+        self.stage.clear_rows(full)
+        self.cleared_lines += n
+        self.vfx.trigger("flash", 0.22)
+        self.vfx.trigger("shake", 2.6)
+        if self.audio:
+            self.audio.play("sparkle", 0.9)
+        self._lift_actor_if_stuck()
+        self.push_toast(f"消除 {n} 行", S_ACCENT)
+
+        # 瞬时型：本次至少消掉 N 行（不填参数 = 每次消行都触发）
+        for ev in self.events:
+            if ev.get("trigger") != "on_line_clear":
+                continue
+            want = ev.get("param")
+            if want is not None:
+                try:
+                    if n < int(want):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            self._run_event(ev)
+        return n
+
+    def _lift_actor_if_stuck(self) -> None:
+        """消行后地形整体下移，小人可能被埋进实心格——把它顶上去。"""
+        a = self.actor
+        if not touching(self.stage, a.x, a.y, AW, AH):
+            return
+        for _ in range(self.stage.h + 2):
+            a.y -= 1.0
+            if not touching(self.stage, a.x, a.y, AW, AH):
+                break
+        a.vy = max(0.0, float(getattr(a, "vy", 0.0)))
 
     # ================================================== 判定
     def _overlaps_actor(self, p: Piece) -> bool:
@@ -551,6 +639,8 @@ class Core:
             hit = self.elapsed >= float(g.get("seconds", 60))
         elif t == "lock_count":
             hit = self.lock_count >= int(g.get("count", 20))
+        elif t == "clear_lines":
+            hit = self.cleared_lines >= int(g.get("clear", 6))
         elif t == "none":
             hit = False
         if hit:
@@ -649,6 +739,8 @@ class Core:
                     hit = p is not None and self.elapsed >= float(p)
                 elif t == "on_lock_count":
                     hit = p is not None and self.lock_count >= int(p)
+                elif t == "on_clear_count":
+                    hit = p is not None and self.cleared_lines >= int(p)
                 else:
                     continue
             except (TypeError, ValueError):
@@ -741,11 +833,21 @@ class Core:
 
     def _cmd_drop(self, arg: str) -> None:
         """drop [块数]
-           drop <形状> [列号 | player | random] [朝向] [块数]
+           drop <形状> [列号 | player | random] [朝向] [块数] [slow]
 
+        默认瞬间落到底；带 slow 时只跳过倒计时，按正常速度落下（能看清落点）。
         例：drop 3 / drop T / drop T 4 / drop T player 1 / drop 十字 2 0 3
+            drop T 4 slow   —— 第四列一块 T，立刻开始落但慢慢掉
         """
         args = split_args(arg or "")
+        slow = False
+        rest_args = []
+        for a in args:
+            if str(a).lower() in ("slow", "fall", "gradual", "缓", "慢"):
+                slow = True
+            else:
+                rest_args.append(a)
+        args = rest_args
         kind = None
         col = None
         rot = None
@@ -775,7 +877,8 @@ class Core:
             self.push_toast(f"未知形状：{kind}", S_WARN)
             return
         for _ in range(n):
-            self.forced.append({"kind": kind, "col": col, "rot": rot})
+            self.forced.append({"kind": kind, "col": col, "rot": rot,
+                                "quick": slow})
         self.drop_queue += n
         aim = self.aiming
         if kind is not None and aim is not None and \
@@ -785,7 +888,11 @@ class Core:
             aim = None
         if aim is not None:
             aim.aim_t = 0.0
-            aim.instant = True
+            if slow:
+                aim.instant = False
+                self._begin_fall(aim)          # 跳过倒计时，正常速度落
+            else:
+                aim.instant = True
         elif not self.pieces:
             self.spawn_delay = 0.0
 

@@ -335,6 +335,8 @@ class PlayScene(Scene):
             or bool(k[pygame.K_UP]) or bool(k[pygame.K_w]),
             "pleft": pleft, "pright": pright,
             "rotate": bool(k[pygame.K_x]) or bool(k[pygame.K_z]),
+            # 立即下落：无视倒计时，让头顶那块马上开始落
+            "drop": bool(k[pygame.K_DOWN]) or bool(k[pygame.K_s]),
             "advance": False,
         }
 
@@ -432,7 +434,7 @@ class PlayScene(Scene):
         if self.core.runner.active and self.core.blocking:
             self._block_wait += dt
             held = any(inp.get(k) for k in ("left", "right", "jump",
-                                            "pleft", "pright", "rotate"))
+                                            "pleft", "pright", "rotate", "drop"))
             if held:
                 self._hold_advance += dt
                 if self._hold_advance >= 0.22:
@@ -486,10 +488,11 @@ class PlayScene(Scene):
             self._draw_result(surf, w, h, core)
 
         hint = [("← →", "移动"), ("空格", "跳跃"), ("X", "旋转方块"),
-                ("R", "重来"), ("Esc", "返回")]
+                ("↓ S", "立即下落"), ("R", "重来"), ("Esc", "返回")]
         if self.level["blocks"].get("hover") == "manual":
             hint = [("← →", "移动方块"), ("A D", "移动小人"), ("空格", "跳跃"),
-                    ("X", "旋转方块"), ("R", "重来"), ("Esc", "返回")]
+                    ("X", "旋转方块"), ("↓ S", "立即下落"), ("R", "重来"),
+                    ("Esc", "返回")]
         inp = self._read_input()
         active = set()
         manual = self.level["blocks"].get("hover") == "manual"
@@ -504,6 +507,8 @@ class PlayScene(Scene):
             active.add("空格")
         if inp.get("rotate") and self.core.can_rotate:
             active.add("X")
+        if inp.get("drop") and self.core.can_quick_drop:
+            active.add("↓ S")
         if self.core.runner.active and self.core.blocking:
             hint = [("空格 / 点击 / 方向键", "继续对白（演出已暂停）"),
                     ("R", "重来"), ("Esc", "返回")]
@@ -599,6 +604,8 @@ class PlayScene(Scene):
         ]
         if core.concurrent() > 1:
             rows.insert(1, ("在场方块", f"{len(core.pieces)} / {core.concurrent()}"))
+        if core.line_clear_on:
+            rows.insert(1, ("已消行", f"{core.cleared_lines} 行"))
         for k, v in rows:
             S.draw_text(surf, k, (x, y), 12, S.DIM2)
             img = S.font(12, True).render(str(v), True, S.TEXT)
