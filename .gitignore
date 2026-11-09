@@ -2,6 +2,7 @@
 
 .workbuddy/*
 .idea/*
+.venv/*
 
 # 涉及提示词机密，不可泄漏。
 
