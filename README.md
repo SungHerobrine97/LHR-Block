@@ -15,6 +15,8 @@
 
 ## 安装和运行
 
+手动安装：
+
 1. 克隆这个仓库
 2. 在能使用Python和pip的环境下输入指令
 
@@ -25,6 +27,10 @@ python main.py
 ```
 
 3. Enjoy.
+
+或者：
+
+直接点击[Release](https://github.com/SungHerobrine97/LHR-Block/releases/)页面下载预构建的应用程序包，并手动解压到你喜欢的目录下以直接开玩。
 
 ## 目标
 
