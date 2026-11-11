@@ -21,3 +21,4 @@ build/build.zip
 build/saves/save.json
 build/dist/
 build/Laharoi Block Story Editor.spec
+/setup.py

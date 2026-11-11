@@ -208,9 +208,9 @@ class MenuScene(Scene):
         mouse = pygame.mouse.get_pos()
 
         # 顶部标题
-        title = S.font(30, True).render("登塔者", True, S.TEXT)
+        title = S.font(30, True).render("虚质方块二创编辑器", True, S.TEXT)
         surf.blit(title, (lay["topbar"].x, lay["topbar"].y - 2))
-        sub = S.font(14).render("Climb Tower · 在坠落的方块之间，抵达舞台顶端", True, S.DIM)
+        sub = S.font(14).render("你真的要摧毁拉海洛方块吗？", True, S.DIM)
         surf.blit(sub, (lay["topbar"].x + title.get_width() + 14, lay["topbar"].y + 14))
         sinfo = S.font(12).render(self.app.save.summary(), True, S.DIM2)
         surf.blit(sinfo, (lay["topbar"].right - sinfo.get_width(), lay["topbar"].y + 16))

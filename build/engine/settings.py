@@ -5,7 +5,7 @@ import os
 
 import pygame
 
-APP_TITLE = "登塔者 · Climb Tower"
+APP_TITLE = "虚质方块自制剧情编辑器"
 APP_VERSION = "1.0.0"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
