@@ -1,7 +1,6 @@
-<div style="text-align: center;">
-<img src="imgs/page.png">
-<h1>虚质方块二创编辑器</h1>
-</div>
+![](imgs/Cover.png)
+
+<h1 align="center">虚质方块二创编辑器</h1>
 
 ## 概述
 
