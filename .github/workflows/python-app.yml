@@ -19,6 +19,11 @@ jobs:
       run:
         shell: pwsh
         working-directory: build
+    strategy:
+      matrix:
+        include:
+          - os: Windows
+            type: dev
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python 3.9
@@ -35,10 +40,16 @@ jobs:
         python -m pip install -r requirements.txt
     - name: Bundle an installer
       run: |
-        & .\build.ps1
+        pyinstaller -F -w --onedir `
+        --add-data "engine/*.py;engine" `
+        --add-data "content/presets/*.json;content/presets"  `
+        --add-data "export/*.json;export" `
+        main.py `
+        --name "Laharoi Block Story Editor Dev Build" `
+        --icon "icons.ico"
     - name: Upload artifact
       uses: actions/upload-artifact@v7.0.2
       with:
-        name: installer
+        name: installer-${{ matrix.os }}-${{ matrix.type }}.zip
         path: build/dist/
         if-no-files-found: error
