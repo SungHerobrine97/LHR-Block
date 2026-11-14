@@ -30,7 +30,7 @@ jobs:
         pip install pyinstaller
         if (Test-Path -Path requirements.txt) {
           pip install -r requirements.txt
-        } or {
+        } else {
           exit 255
         }
     - name: Bundle a installer
