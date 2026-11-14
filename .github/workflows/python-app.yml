@@ -36,3 +36,9 @@ jobs:
     - name: Bundle an installer
       run: |
         & .\build.ps1
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: installer
+        path: build/dist/
+        if-no-files-found: error
