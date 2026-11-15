@@ -92,7 +92,7 @@ class MenuScene(Scene):
         for i, lv in enumerate(self.levels):
             rect = pygame.Rect(left.x, y, left.w - 8, rowh)
             lvdata = self.app.save.level(lv.id)
-            tag = "已通关" if lvdata.get("cleared") else ""
+            tag = "已完成" if lvdata.get("cleared") else ""
             self.rows.append(ui.ListRow(
                 rect, lv.title, f"{lv.width}×{lv.height} · {lv.summary()}",
                 (lambda i=i: self._pick(i)), i == self.index, tag))
@@ -106,7 +106,7 @@ class MenuScene(Scene):
         self.b_start = ui.Button(pygame.Rect(bx, r.bottom - 212, bw, 42),
                                  "开始演出", self.start, 16, "primary")
         self.b_edit = ui.Button(pygame.Rect(bx, r.bottom - 164, bw, 36),
-                                "打开编辑器", self.open_editor, 14)
+                                "进入编辑器", self.open_editor, 14)
         self.st_vol = ui.Stepper(pygame.Rect(bx, r.bottom - 126, bw, 26), "音量",
                                  int(self.app.save.data["options"].get("volume", 80)),
                                  0, 100, 10, self._set_volume, "{:g}")
@@ -129,7 +129,7 @@ class MenuScene(Scene):
         from .editor import EditorScene
         path = EditorScene._file_dialog(False)
         if not path:
-            self.app.toast("未选择文件（也可放到 build/import 目录）", S.DIM)
+            self.app.toast("未选择文件（也可放到 安装目录下的 _internal/import 目录）", S.DIM)
             return
         names = L.import_level_file(path)
         if not names:
@@ -488,10 +488,10 @@ class PlayScene(Scene):
             self._draw_result(surf, w, h, core)
 
         hint = [("← →", "移动"), ("空格", "跳跃"), ("X", "旋转方块"),
-                ("↓ S", "立即下落"), ("R", "重来"), ("Esc", "返回")]
+                ("↓ S", "立即下落"), ("R", "重启演出"), ("Esc", "返回")]
         if self.level["blocks"].get("hover") == "manual":
             hint = [("← →", "移动方块"), ("A D", "移动小人"), ("空格", "跳跃"),
-                    ("X", "旋转方块"), ("↓ S", "立即下落"), ("R", "重来"),
+                    ("X", "旋转方块"), ("↓ S", "立即下落"), ("R", "重启演出"),
                     ("Esc", "返回")]
         inp = self._read_input()
         active = set()
@@ -511,7 +511,7 @@ class PlayScene(Scene):
             active.add("↓ S")
         if self.core.runner.active and self.core.blocking:
             hint = [("空格 / 点击 / 方向键", "继续对白（演出已暂停）"),
-                    ("R", "重来"), ("Esc", "返回")]
+                    ("R", "重启演出"), ("Esc", "返回")]
             if active:
                 active.add("空格 / 点击 / 方向键")
         ui.draw_hint_bar(surf, lay["hint"], hint, active=active)
@@ -561,7 +561,7 @@ class PlayScene(Scene):
         y += 18
         rules = [
             ("方块", "下落后固定于"),
-            ("命中/封困", "立即终止演出"),
+            ("命中/被困住", "立即终止演出"),
             ("失败文本", core.level.data["fail"]["text"]),
         ]
         for k, v in rules:
@@ -697,7 +697,7 @@ class PlayScene(Scene):
         surf.blit(ov, (0, 0))
         S.draw_text(surf, "窗口失去焦点，演出已暂停", (w // 2, h // 2 - 26), 26,
                     S.TEXT, True, anchor="center")
-        S.draw_text(surf, "点回游戏窗口即可继续", (w // 2, h // 2 + 10), 14, S.DIM,
+        S.draw_text(surf, "返回到游戏窗口即可继续", (w // 2, h // 2 + 10), 14, S.DIM,
                     anchor="center")
 
     def _draw_pause(self, surf, w, h):
@@ -705,7 +705,7 @@ class PlayScene(Scene):
         ov.fill((8, 10, 16, 170))
         surf.blit(ov, (0, 0))
         S.draw_text(surf, "暂停", (w // 2, h // 2 - 30), 34, S.TEXT, True, anchor="center")
-        S.draw_text(surf, "P 继续 · R 重来 · Esc 返回", (w // 2, h // 2 + 12),
+        S.draw_text(surf, "P 继续 · R 重启演出 · Esc 返回", (w // 2, h // 2 + 12),
                     14, S.DIM, anchor="center")
 
     def _draw_result(self, surf, w, h, core):
@@ -720,10 +720,10 @@ class PlayScene(Scene):
         S.round_rect(surf, rect, S.PANEL, 14)
         S.round_rect(surf, rect, S.GOOD if win else S.BAD, 14, 2)
 
-        head = "演出成功" if win else "演出终止"
+        head = "演出完成" if win else "终止演出"
         S.draw_text(surf, head, (rect.centerx, rect.y + 26), 30,
                     S.GOOD if win else S.BAD, True, anchor="midtop")
-        S.draw_text(surf, res.get("text", "") or ("登顶成功" if win else "败北"),
+        S.draw_text(surf, res.get("text", "") or ("演出完成" if win else "败北"),
                     (rect.centerx, rect.y + 70), 16, S.TEXT, anchor="midtop")
         reason = {"crush": "被下落的方块命中", "buried": "被困在封闭空间",
                   "stuck": "再也无法向上", "overflow": "舞台已被填满",
@@ -741,16 +741,16 @@ class PlayScene(Scene):
             y = rect.bottom - 70
             self.buttons = [
                 ui.Button(pygame.Rect(cx - bw2 - 8, y, bw2, bh2),
-                          "再演一次", lambda: self.restart(), 15, "primary"),
+                          "再玩一次", lambda: self.restart(), 15, "primary"),
                 ui.Button(pygame.Rect(cx + 8, y, bw2, bh2), "返回菜单",
                           lambda: self.app.goto(MenuScene(self.app)), 15),
             ]
         if self.preview and self.app.editor_scene:
             self.buttons = [
                 ui.Button(pygame.Rect(rect.centerx - 138, rect.bottom - 70, 130, 38),
-                          "再演一次", lambda: self.restart(), 15, "primary"),
+                          "再玩一次", lambda: self.restart(), 15, "primary"),
                 ui.Button(pygame.Rect(rect.centerx + 8, rect.bottom - 70, 130, 38),
-                          "回到编辑器", lambda: self.app.goto(self.app.editor_scene), 15),
+                          "返回编辑器", lambda: self.app.goto(self.app.editor_scene), 15),
             ]
         mouse = pygame.mouse.get_pos()
         for b in self.buttons:
