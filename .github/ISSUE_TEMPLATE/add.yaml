@@ -30,7 +30,7 @@ body:
     id: source
     attributes:
       label: 想法来源
-      description:
+      description: 
       placeholder: https://youtube.com/XXXXXXXXX
       value: ""
     validations:
