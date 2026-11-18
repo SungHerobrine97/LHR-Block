@@ -30,8 +30,8 @@ body:
     id: source
     attributes:
       label: 想法来源
-      description: 
-      placeholder: https://youtube.com/XXXXXXXXX
+      description: 有时候这东西不提供我们也许还能找到源头，只不过时间较久。
+      placeholder: https://youtube.com/AbCdEfGhIjKl
       value: "输入链接……"
     validations:
       required: false
