@@ -32,6 +32,6 @@ body:
       label: 想法来源
       description: 
       placeholder: https://youtube.com/XXXXXXXXX
-      value: ""
+      value: "输入链接……"
     validations:
       required: false
