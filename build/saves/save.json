@@ -58,11 +58,19 @@
       "attempts": 1,
       "clears": 0,
       "best_ms": null
+    },
+    "new_level": {
+      "cleared": false,
+      "best_row": null,
+      "attempts": 0,
+      "clears": 0,
+      "best_ms": null
     }
   },
   "seen": [
     "__smoke_tmp",
-    "__tmp_resize"
+    "__tmp_resize",
+    "new_level"
   ],
   "options": {
     "sound": true,

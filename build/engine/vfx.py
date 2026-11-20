@@ -215,9 +215,12 @@ class Glitch(Base):
 
     def draw(self, surf, ctx):
         w, h = surf.get_size()
+        if w < 1 or h < 3:
+            return
         if random.random() < 0.14:
-            y = random.randint(0, h - 8)
-            hh = random.randint(3, 14)
+            # 先定条带高度，再在合法范围内取 y，确保 y + hh <= h。
+            hh = random.randint(3, min(14, h))
+            y = random.randint(0, h - hh)
             band = surf.subsurface(pygame.Rect(0, y, w, hh)).copy()
             surf.blit(band, (random.randint(-14, 14), y))
 

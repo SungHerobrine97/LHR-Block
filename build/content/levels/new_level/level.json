@@ -1,0 +1,92 @@
+{
+  "id": "new_level",
+  "title": "新建演出",
+  "subtitle": "",
+  "author": "",
+  "stage": {
+    "width": 10,
+    "height": 20
+  },
+  "blocks": {
+    "pool": [
+      "I",
+      "O",
+      "T",
+      "S",
+      "Z",
+      "J",
+      "L"
+    ],
+    "allow_rotation": true,
+    "player_rotate": true,
+    "hover": "follow",
+    "concurrent": 1,
+    "spawn_gap": 0.35,
+    "quick_drop": true,
+    "line_clear": false,
+    "aim_time": [
+      2.0,
+      9.9
+    ],
+    "fall_interval": 0.3,
+    "fall_interval_min": 0.1,
+    "ramp": 0.985,
+    "preview": true
+  },
+  "player": {
+    "spawn_col": null,
+    "move_speed": 6.4,
+    "jump_height": 2.6,
+    "gravity": 34.0,
+    "climb": 1,
+    "air_control": 1.0
+  },
+  "goal": {
+    "type": "reach_row",
+    "row": 0,
+    "seconds": 60,
+    "count": 20,
+    "clear": 6
+  },
+  "fail": {
+    "text": "败北",
+    "texts": {},
+    "crush": true,
+    "buried": true,
+    "stuck": false,
+    "overflow": false
+  },
+  "vfx": [
+    "embers",
+    "glitch"
+  ],
+  "audio": {
+    "bgm": "",
+    "volume": 100
+  },
+  "events": [],
+  "shapes": [],
+  "terrain": [
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    "..........",
+    ".........."
+  ],
+  "tags": []
+}

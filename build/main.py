@@ -108,8 +108,9 @@ class App:
 
 
 def bootstrap_content() -> None:
-    """首次运行时确保至少有一份可玩的演出。"""
+    """首次运行时确保至少有一份可玩的演出，并把旧关卡收进各自目录。"""
     S.ensure_dirs()
+    L.migrate_flat_levels()
     if not L.list_levels():
         from engine.scenes import default_level_data
         L.save_level(L.Level(default_level_data()), "default.json")
