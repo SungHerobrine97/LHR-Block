@@ -36,6 +36,9 @@ class EditorScene:
     def __init__(self, app, level: L.Level | None = None):
         self.app = app
         self.level = level or L.Level(dict(L.DEFAULTS))
+        _a0 = getattr(app, "audio", None)
+        if _a0:
+            _a0.set_level_dir(L.level_root(self.level))
         self.stage = Stage(self.level.width, self.level.height)
         rows = self.level.get("terrain") or []
         if rows:
@@ -285,9 +288,11 @@ class EditorScene:
                                        self._set_spawn, "{:g}")
             y += 8
             self._label(cx, y, "音频（开演后自动循环播放）"); y += 16
-            bgm_names = [""] + Audio.list_bgm()
+            _audio = self._audio()
+            bgm_pool = _audio.list_bgm() if _audio else list(BGM_LABELS)
+            bgm_names = [""] + bgm_pool
             bgm_labels = ["（无）"] + [
-                f"{BGM_LABELS.get(n, n)} · {n}" for n in Audio.list_bgm()]
+                f"{BGM_LABELS.get(n, n)} · {n}" for n in bgm_pool]
             cur_bgm = (d.get("audio") or {}).get("bgm", "") or ""
             self.c_bgm = ui.Choice(row(28), "开演音乐", bgm_names,
                                    bgm_names.index(cur_bgm) if cur_bgm in bgm_names else 0,
@@ -300,6 +305,10 @@ class EditorScene:
             self.b_bgstop = ui.Button(pygame.Rect(cx + cw - 116, y, 112, 26), "停止",
                                       self._stop_bgm, 12)
             y += 30
+            self.b_impaudio = ui.Button(pygame.Rect(cx, y, cw, 24),
+                                        "导入音频到本关卡（复制进关卡目录）",
+                                        self._import_audio, 11)
+            y += 28
 
         elif self.tab == TAB_SHAPE:    # 形状
             self._label(cx, y, "形状（内置 7 种只读，自定义可编辑）"); y += 16
@@ -479,9 +488,11 @@ class EditorScene:
             self.clicks += [self.c_dkind, self.st_dcol, self.b_drop]
 
             # 音效 / 音乐插入助手
-            sfx_names = Audio.list_sfx() + Audio.list_files()
+            _audio = self._audio()
+            level_files = _audio.list_files() if _audio else []
+            sfx_names = Audio.list_sfx() + level_files
             sfx_labels = [f"{SFX_LABELS.get(n, n)} · {n}" for n in Audio.list_sfx()] \
-                + [f"文件 · {n}" for n in Audio.list_files()]
+                + [f"文件 · {n}" for n in level_files]
             self.c_snd = ui.Choice(pygame.Rect(cx, body.bottom - 62, cw - 200, 26),
                                    "音效", sfx_names, 0, None, sfx_labels)
             self.b_sndtest = ui.Button(pygame.Rect(cx + cw - 194, body.bottom - 62, 58, 26),
@@ -805,6 +816,73 @@ class EditorScene:
     def _audio(self):
         return getattr(self.app, "audio", None)
 
+    def _level_audio_dir(self) -> str:
+        d = L.level_root(self.level)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _import_audio(self):
+        """从系统对话框挑一个音频文件，复制进当前关卡的目录。"""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                root.attributes("-topmost", True)
+            except Exception:      # noqa: BLE001
+                pass
+            root.update()
+            path = filedialog.askopenfilename(
+                title="导入音频到关卡目录",
+                filetypes=[("音频文件", "*.ogg *.wav *.mp3"),
+                           ("所有文件", "*.*")])
+            try:
+                root.destroy()
+            except Exception:      # noqa: BLE001
+                pass
+        except Exception:          # noqa: BLE001
+            path = ""
+        if not path:
+            self._flash("未选择文件；也可手动把音频放进关卡目录")
+            return
+        stem = Audio.import_audio(path, self._level_audio_dir())
+        if not stem:
+            self._flash("不支持的音频格式（支持 .ogg/.wav/.mp3）")
+            return
+        audio = self._audio()
+        if audio:
+            audio.set_level_dir(L.level_root(self.level))
+        self._build()
+        self._flash(f"已导入音频：{stem}（保存在关卡目录）")
+
+    def _bundle_level_audio(self):
+        """把本关引用的音频文件复制进关卡目录，让关卡自包含。"""
+        audio = self._audio()
+        if not audio:
+            return
+        dest = self._level_audio_dir()
+        saved = 0
+        # 开演音乐
+        cfg = self.level.data.get("audio") or {}
+        names = set()
+        bgm = str(cfg.get("bgm", "") or "").strip()
+        if bgm and bgm.lower() not in ("off", "stop", "none", "0", "停"):
+            names.add(bgm)
+        # 剧本里的 sfx / bgm 指令
+        for ev in self.level.events_list():
+            script = str(ev.get("script", "") or "")
+            for chunk in script.replace("\\", ";").split(";"):
+                parts = chunk.strip().split()
+                if len(parts) >= 2 and parts[0].lower() in ("sfx", "bgm"):
+                    nm = parts[1].strip()
+                    if nm and nm.lower() not in ("off", "stop", "none", "0", "停"):
+                        names.add(nm)
+        for name in names:
+            if audio.save_audio_to_level(name, dest):
+                saved += 1
+        return saved
+
     def _apply_bgm(self, value):
         audio = self._audio()
         if audio and value:
@@ -967,28 +1045,36 @@ class EditorScene:
     # ============================================================ 存档操作
     def save(self):
         self._sync()
-        path = L.save_level(self.level, None if not self.level.path
-                            else os.path.basename(self.level.path))
+        path = L.save_level(self.level)
         self.level.path = path
-        L.save_level(self.level)
+        self._bundle_level_audio()
+        audio = self._audio()
+        if audio:
+            audio.set_level_dir(L.level_root(self.level))
         self.app.save.mark_seen(self.level.id)
         self.app.save.save()
-        self._flash(f"已保存到 content/levels/{os.path.basename(path)}")
+        if hasattr(self.app, "menu") and self.app.menu:
+            self.app.menu.reload()
+        self._flash(f"已保存到关卡目录：content/levels/{os.path.basename(os.path.dirname(path))}")
 
     def save_as(self):
         self._sync()
         base = L.safe_name(self.level.id) or "level"
         n = 1
-        fn = base + ".json"
-        while os.path.exists(os.path.join(S.LEVELS_DIR, fn)):
+        d = L.level_dir_for(base)
+        while os.path.isdir(d):
             n += 1
-            fn = f"{base}_{n}.json"
+            d = L.level_dir_for(f"{base}_{n}")
         self.level.data["id"] = self.level.id + f"_{n}" if n > 1 else self.level.id
         self.level.path = None
-        path = L.save_level(self.level, fn)
+        path = L.save_level(self.level)
+        self._bundle_level_audio()
+        audio = self._audio()
+        if audio:
+            audio.set_level_dir(L.level_root(self.level))
         if hasattr(self.app, "menu") and self.app.menu:
             self.app.menu.reload()
-        self._flash(f"已另存为 {fn}")
+        self._flash(f"已另存为关卡目录：{os.path.basename(os.path.dirname(path))}")
 
     def load_dialog(self):
         """载入：循环切换到 content/levels 里的下一份演出。"""
@@ -1017,6 +1103,9 @@ class EditorScene:
         self.cur_shape = 0
         self.cur_event_i = 0
         self.scroll = 0
+        _a0 = getattr(self.app, "audio", None)
+        if _a0:
+            _a0.set_level_dir(L.level_root(lv))
         self._build()
 
     # -------------------------------------------------- 导入 / 导出

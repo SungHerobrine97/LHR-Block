@@ -15,6 +15,7 @@ from __future__ import annotations
 import array
 import math
 import os
+import shutil
 
 import pygame
 
@@ -188,6 +189,8 @@ class Audio:
         self._bgm_file = False
         self.bgm_name = None
         self.muted = False
+        # 当前关卡的根目录：关卡自带的音效/音乐优先从这里查找
+        self.level_dir = None
         if not enabled:
             return
         try:
@@ -302,37 +305,87 @@ class Audio:
         return snd
 
     # -------------------------------------------------- 文件
+    def set_level_dir(self, directory: str | None) -> None:
+        """设置当前关卡根目录；关卡内自带的音频文件会优先在这里查找。"""
+        self.level_dir = directory or None
+
     @staticmethod
-    def find_file(name: str):
-        if not name:
+    def _find_in(directory: str | None, name: str):
+        if not name or not directory:
             return None
         base = str(name).strip()
         for ext in ("",) + FILE_EXT:
-            p = os.path.join(AUDIO_DIR, base + ext)
+            p = os.path.join(directory, base + ext)
             if os.path.isfile(p):
                 return p
-        for fn in sorted(os.listdir(AUDIO_DIR)) if os.path.isdir(AUDIO_DIR) else []:
+        for fn in sorted(os.listdir(directory)) if os.path.isdir(directory) else []:
             stem, ext = os.path.splitext(fn)
             if stem.lower() == base.lower() and ext.lower() in FILE_EXT:
-                return os.path.join(AUDIO_DIR, fn)
+                return os.path.join(directory, fn)
         return None
 
-    @staticmethod
-    def list_files() -> list:
+    def find_file(self, name: str):
+        """先查当前关卡根目录，再退回全局 content/audio 目录。"""
+        return (self._find_in(self.level_dir, name)
+                or self._find_in(AUDIO_DIR, name))
+
+    def list_files(self) -> list:
+        """当前关卡自带音频 + 全局音频（去重、排序）。"""
         out = []
-        if os.path.isdir(AUDIO_DIR):
-            for fn in sorted(os.listdir(AUDIO_DIR)):
+        for directory in (self.level_dir, AUDIO_DIR):
+            if not os.path.isdir(directory or ""):
+                continue
+            for fn in sorted(os.listdir(directory)):
                 if os.path.splitext(fn)[1].lower() in FILE_EXT:
-                    out.append(os.path.splitext(fn)[0])
+                    stem = os.path.splitext(fn)[0]
+                    if stem not in out:
+                        out.append(stem)
         return out
 
     @staticmethod
     def list_sfx() -> list:
         return sorted(SFX.keys())
 
+    def list_bgm(self) -> list:
+        return sorted(BGM.keys()) + self.list_files()
+
+    def save_audio_to_level(self, name: str, dest_dir: str | None = None) -> bool:
+        """把脚本/设置里引用的音频文件复制到关卡根目录，使关卡自包含。
+
+        name 是内置音效名时无文件可复制，返回 False（属正常情况）。
+        """
+        dest = dest_dir if dest_dir is not None else self.level_dir
+        if not dest or not name:
+            return False
+        key = str(name).strip()
+        if not key:
+            return False
+        # 已在关卡目录里则无需处理
+        if self._find_in(dest, key) and os.path.dirname(self._find_in(dest, key)) == dest:
+            return True
+        src = self._find_in(AUDIO_DIR, key)
+        if not src:
+            return False
+        os.makedirs(dest, exist_ok=True)
+        dst = os.path.join(dest, os.path.basename(src))
+        if os.path.abspath(src) != os.path.abspath(dst):
+            shutil.copy2(src, dst)
+        return True
+
     @staticmethod
-    def list_bgm() -> list:
-        return sorted(BGM.keys()) + Audio.list_files()
+    def import_audio(path: str, dest_dir: str) -> str | None:
+        """把一个外部音频文件复制进关卡根目录，返回文件名（不含扩展名）。"""
+        if not path or not dest_dir:
+            return None
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in FILE_EXT or not os.path.isfile(path):
+            return None
+        os.makedirs(dest_dir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        dst = os.path.join(dest_dir, stem + ext)
+        if os.path.abspath(path) != os.path.abspath(dst):
+            shutil.copy2(path, dst)
+        return stem
 
     # -------------------------------------------------- 播放
     def play(self, name: str, vol: float = 1.0) -> bool:

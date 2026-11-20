@@ -341,11 +341,66 @@ class Level:
 
 
 # ---------------------------------------------------------------- 载入
+# 关卡目录布局：content/levels/<关卡目录>/level.json，音频文件放在同一根目录下。
+LEVEL_FILE = "level.json"
+
+
 def safe_name(s: str) -> str:
     keep = []
     for ch in (s or "").strip():
         keep.append(ch if (ch.isalnum() or ch in "-_ ()（）") else "_")
     return ("".join(keep) or "untitled")[:64]
+
+
+def level_dir_for(lid: str) -> str:
+    """按关卡 id 返回它在 content/levels 下的专属目录。"""
+    return os.path.join(S.LEVELS_DIR, safe_name(lid) or "untitled")
+
+
+def level_root(lv: "Level | str | None") -> str:
+    """返回关卡的根目录（level.json 所在目录，也是关卡音频的存放位置）。
+
+    兼容旧版平铺 json 与尚未保存的关卡（此时按 id 推导目录）。
+    """
+    if lv is None:
+        return S.LEVELS_DIR
+    if isinstance(lv, str):
+        path = lv
+        lid = ""
+    else:
+        path = getattr(lv, "path", None)
+        lid = lv.id
+    if path and os.path.basename(path).lower() == LEVEL_FILE:
+        return os.path.dirname(path)
+    if path and os.path.dirname(path):
+        # 旧版平铺 json：音频放进同名子目录
+        return os.path.join(os.path.dirname(path),
+                            safe_name(os.path.splitext(os.path.basename(path))[0]))
+    return level_dir_for(lid or "untitled")
+
+
+def migrate_flat_levels() -> None:
+    """把旧版平铺的 content/levels/*.json 收进各自的关卡目录。
+
+    如果目标目录已经有 level.json，则保留旧文件不动（由 list_levels 去重），
+    避免覆盖用户后来编辑过的内容。
+    """
+    S.ensure_dirs()
+    for fn in sorted(os.listdir(S.LEVELS_DIR)):
+        if not fn.lower().endswith(".json"):
+            continue
+        src = os.path.join(S.LEVELS_DIR, fn)
+        if not os.path.isfile(src):
+            continue
+        d = level_dir_for(os.path.splitext(fn)[0])
+        dst = os.path.join(d, LEVEL_FILE)
+        if os.path.isfile(dst):
+            continue
+        os.makedirs(d, exist_ok=True)
+        try:
+            os.replace(src, dst)
+        except OSError:
+            pass
 
 
 def load_json(path: str) -> dict | None:
@@ -367,32 +422,67 @@ def save_json(path: str, data: dict) -> bool:
 
 
 def load_level(path: str) -> Level | None:
+    """载入关卡：path 可以是关卡目录，也可以是 level.json / 旧版平铺 json。"""
+    if os.path.isdir(path):
+        candidate = os.path.join(path, LEVEL_FILE)
+        if not os.path.isfile(candidate):
+            others = [f for f in sorted(os.listdir(path))
+                      if f.lower().endswith(".json")]
+            if not others:
+                return None
+            candidate = os.path.join(path, others[0])
+        path = candidate
     raw = load_json(path)
     if raw is None:
         return None
-    raw.setdefault("id", os.path.splitext(os.path.basename(path))[0])
+    stem = os.path.splitext(os.path.basename(path))[0]
+    if stem.lower() == "level":
+        stem = os.path.basename(os.path.dirname(path)) or stem
+    raw.setdefault("id", stem)
     return Level(raw, path)
 
 
 def list_levels() -> List[Level]:
+    """列出所有关卡：每个关卡目录一份，同时兼容旧版平铺的 json 文件。"""
     S.ensure_dirs()
     out = []
-    for fn in sorted(os.listdir(S.LEVELS_DIR)):
-        if not fn.lower().endswith(".json"):
+    seen_ids = set()
+    for name in sorted(os.listdir(S.LEVELS_DIR)):
+        p = os.path.join(S.LEVELS_DIR, name)
+        if os.path.isdir(p):
+            candidate = os.path.join(p, LEVEL_FILE)
+            if not os.path.isfile(candidate):
+                others = [f for f in sorted(os.listdir(p))
+                          if f.lower().endswith(".json")]
+                if not others:
+                    continue
+                candidate = os.path.join(p, others[0])
+        elif name.lower().endswith(".json"):
+            candidate = p
+        else:
             continue
-        lv = load_level(os.path.join(S.LEVELS_DIR, fn))
-        if lv:
+        lv = load_level(candidate)
+        if lv and lv.id not in seen_ids:
+            seen_ids.add(lv.id)
             out.append(lv)
     out.sort(key=lambda x: (x.data.get("order", 99), x.id))
     return out
 
 
 def save_level(lv: Level, filename: str | None = None) -> str:
+    """把关卡保存到它自己的目录里：content/levels/<关卡>/level.json。
+
+    filename 仅用于兼容旧调用：传入 "xxx.json" 时改用同名关卡目录；
+    传入 level.json（即已有目录里的文件名）时沿用当前关卡目录。
+    """
     S.ensure_dirs()
-    fn = filename or (safe_name(lv.id) + ".json")
-    if not fn.lower().endswith(".json"):
-        fn += ".json"
-    path = os.path.join(S.LEVELS_DIR, fn)
+    d = level_root(lv)
+    if filename:
+        stem = os.path.splitext(os.path.basename(filename))[0]
+        if stem.lower() != "level":
+            d = level_dir_for(stem)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, LEVEL_FILE)
     save_json(path, lv.to_dict())
     lv.path = path
     return path
@@ -442,20 +532,20 @@ def import_levels(path: str) -> List[Level]:
 
 
 def import_level_file(path: str, overwrite: bool = True) -> List[str]:
-    """导入并安装到 content/levels，返回写入的文件名列表。"""
+    """导入并安装到 content/levels 各自的关卡目录，返回写入的关卡 id 列表。"""
     S.ensure_dirs()
     written = []
     for lv in import_levels(path):
-        fn = safe_name(lv.id) + ".json"
-        dst = os.path.join(S.LEVELS_DIR, fn)
-        if os.path.exists(dst) and not overwrite:
+        stem = safe_name(lv.id)
+        d = level_dir_for(stem)
+        if os.path.isdir(d) and not overwrite:
             n = 1
-            while os.path.exists(os.path.join(S.LEVELS_DIR, fn)):
+            while os.path.isdir(level_dir_for(f"{stem}_{n}")):
                 n += 1
-                fn = f"{safe_name(lv.id)}_{n}.json"
-            dst = os.path.join(S.LEVELS_DIR, fn)
-        save_level(lv, fn)
-        written.append(fn)
+            stem = f"{stem}_{n}"
+            lv.data["id"] = f"{lv.id}_{n}"
+        save_level(lv, stem + ".json")
+        written.append(lv.id)
     return written
 
 

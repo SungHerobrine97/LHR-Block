@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 
 import pygame
 
@@ -103,26 +104,28 @@ class MenuScene(Scene):
         self.buttons = []
         bw = r.w - 8
         bx = r.x
-        self.b_start = ui.Button(pygame.Rect(bx, r.bottom - 212, bw, 42),
+        self.b_start = ui.Button(pygame.Rect(bx, r.bottom - 244, bw, 40),
                                  "开始演出", self.start, 16, "primary")
-        self.b_edit = ui.Button(pygame.Rect(bx, r.bottom - 164, bw, 36),
+        self.b_create = ui.Button(pygame.Rect(bx, r.bottom - 200, bw, 34),
+                                  "＋ 创建关卡", self.create_level, 14)
+        self.b_edit = ui.Button(pygame.Rect(bx, r.bottom - 162, bw, 34),
                                 "进入编辑器", self.open_editor, 14)
-        self.st_vol = ui.Stepper(pygame.Rect(bx, r.bottom - 126, bw, 26), "音量",
+        self.st_vol = ui.Stepper(pygame.Rect(bx, r.bottom - 124, bw, 26), "音量",
                                  int(self.app.save.data["options"].get("volume", 80)),
                                  0, 100, 10, self._set_volume, "{:g}")
-        self.b_preset = ui.Choice(pygame.Rect(bx, r.bottom - 92, bw, 26),
+        self.b_preset = ui.Choice(pygame.Rect(bx, r.bottom - 90, bw, 26),
                                   "特色玩法", list(range(len(self.preset_names))),
                                   self.preset_idx, self._choose_preset,
                                   self.preset_names)
-        self.b_wipe = ui.Button(pygame.Rect(bx, r.bottom - 60, bw, 24),
+        self.b_wipe = ui.Button(pygame.Rect(bx, r.bottom - 58, bw, 24),
                                 "删除存档", self.wipe, 12, "danger")
         half = (bw - 6) // 2
-        self.b_import = ui.Button(pygame.Rect(bx, r.bottom - 32, half, 22),
+        self.b_import = ui.Button(pygame.Rect(bx, r.bottom - 30, half, 22),
                                   "导入演出", self.import_level_file, 11, "ghost")
-        self.b_refresh = ui.Button(pygame.Rect(bx + half + 6, r.bottom - 32, half, 22),
+        self.b_refresh = ui.Button(pygame.Rect(bx + half + 6, r.bottom - 30, half, 22),
                                    "刷新内容", self.reload, 11, "ghost")
-        self.buttons = [self.b_start, self.b_edit, self.st_vol, self.b_preset,
-                        self.b_wipe, self.b_refresh, self.b_import]
+        self.buttons = [self.b_start, self.b_create, self.b_edit, self.st_vol,
+                        self.b_preset, self.b_wipe, self.b_refresh, self.b_import]
 
     def import_level_file(self):
         """从外部 JSON 导入演出文件（会安装到 content/levels）。"""
@@ -163,6 +166,36 @@ class MenuScene(Scene):
 
     def open_editor(self):
         lv = self.levels[self.index]
+        from .editor import EditorScene
+        self.app.goto(EditorScene(self.app, L.Level(copy.deepcopy(lv.data), lv.path)))
+
+    def create_level(self):
+        """新建一个关卡：独占一个目录，创建后直接进入编辑器。"""
+        base = "new_level"
+        n = 1
+        lid = base
+        taken = {lv.id for lv in self.levels}
+        while lid in taken or os.path.isdir(L.level_dir_for(lid)):
+            n += 1
+            lid = f"{base}_{n}"
+        data = copy.deepcopy(L.DEFAULTS)
+        data["id"] = lid
+        data["title"] = "新建演出"
+        data["subtitle"] = ""
+        data["author"] = ""
+        data["tags"] = []
+        data["events"] = []
+        lv = L.Level(data)
+        path = L.save_level(lv)
+        lv.path = path
+        self.reload()
+        # 选中刚创建的关卡
+        for i, item in enumerate(self.levels):
+            if item.id == lid:
+                self.index = i
+                break
+        self._build()
+        self.app.toast(f"已创建关卡：{lid}", S.GOOD)
         from .editor import EditorScene
         self.app.goto(EditorScene(self.app, L.Level(copy.deepcopy(lv.data), lv.path)))
 
@@ -299,8 +332,10 @@ class PlayScene(Scene):
     def __init__(self, app, level: L.Level, preview=False):
         super().__init__(app)
         self.level = level
-        self.core = Core(level, None if preview else app.save,
-                         getattr(app, "audio", None))
+        _a0 = getattr(app, "audio", None)
+        if _a0:
+            _a0.set_level_dir(L.level_root(level))
+        self.core = Core(level, None if preview else app.save, _a0)
         self.core.on_quit = lambda: setattr(app, "running", False)
         self.preview = preview
         self.t = 0.0
@@ -409,7 +444,8 @@ class PlayScene(Scene):
                 return
 
     def restart(self):
-        self.core = Core(self.level, None if self.preview else self.app.save)
+        self.core = Core(self.level, None if self.preview else self.app.save,
+                         getattr(self.app, "audio", None))
         self.core.on_quit = lambda: setattr(self.app, "running", False)
         self.paused = False
         self.result_time = 0.0
