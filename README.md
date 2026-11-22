@@ -34,6 +34,10 @@ python main.py
 
 直接点击[Release](https://github.com/SungHerobrine97/LHR-Block/releases/)页面下载预构建的应用程序包，并手动解压到你喜欢的目录下以直接开玩。
 
+如果无法访问GIthub或者Github下载慢：
+
+可以前往[托管的永恒E盘](https://mixerwangdev.ysepan.com/)下载文件，访问密码为`114514`。（感谢`fogota`）
+
 ## 目标
 
 - ~~立即向目标位置投放指定方块~~（~~无视上一个方块状态，***你真的要摧毁拉海洛方块吗？***~~）看来是真的要摧毁拉海洛方块了。
