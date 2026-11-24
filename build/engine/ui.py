@@ -64,6 +64,108 @@ class Button(Widget):
         return False
 
 
+# ---------------------------------------------------------------- 菜单栏
+class MenuBar(Widget):
+    """简易下拉菜单栏：菜单项形如 {"label": "保存", "shortcut": "Ctrl+S", "cb": fn}。
+
+    用 "---" 作为分隔项。点击空白处会关闭菜单并把点击交给其他控件。
+    """
+
+    def __init__(self, rect, menus, size=12):
+        self.rect = pygame.Rect(rect)
+        self.menus = menus
+        self.size = size
+        self.open = None
+
+    def close(self) -> None:
+        self.open = None
+
+    def _headers(self) -> list:
+        out = []
+        x = self.rect.x
+        fnt = S.font(self.size, True)
+        for label, _items in self.menus:
+            w = fnt.size(str(label))[0] + 16
+            out.append((label, pygame.Rect(x, self.rect.y, w, self.rect.h)))
+            x += w + 2
+        return out
+
+    def _item_height(self, item) -> int:
+        return 8 if isinstance(item, str) and item == "---" else 24
+
+    def _popup_rect(self, index: int) -> pygame.Rect:
+        header = self._headers()[index][1]
+        items = self.menus[index][1]
+        fnt = S.font(12)
+        sfnt = S.font(11)
+        width = 112
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            need = fnt.size(str(item.get("label", "")))[0]
+            if item.get("shortcut"):
+                need += sfnt.size(str(item["shortcut"]))[0] + 22
+            width = max(width, need + 26)
+        height = 8 + sum(self._item_height(it) for it in items)
+        return pygame.Rect(header.x, header.bottom + 2, width, height)
+
+    def _item_rects(self, index: int) -> list:
+        popup = self._popup_rect(index)
+        out = []
+        y = popup.y + 4
+        for item in self.menus[index][1]:
+            hh = self._item_height(item)
+            if not (isinstance(item, str) and item == "---"):
+                out.append((item, pygame.Rect(popup.x + 4, y, popup.w - 8, hh)))
+            y += hh
+        return out
+
+    def handle_click(self, pos) -> bool:
+        for i, (_label, rect) in enumerate(self._headers()):
+            if rect.collidepoint(pos):
+                self.open = None if self.open == i else i
+                return True
+        if self.open is not None:
+            popup = self._popup_rect(self.open)
+            if popup.collidepoint(pos):
+                for item, rect in self._item_rects(self.open):
+                    if rect.collidepoint(pos):
+                        if item.get("enabled", True) and item.get("cb"):
+                            cb = item["cb"]
+                            self.open = None
+                            cb()
+                        return True
+                return True
+            self.open = None
+        return False
+
+    def draw(self, surf, mouse, **kw):
+        for i, (label, rect) in enumerate(self._headers()):
+            hot = rect.collidepoint(mouse) or self.open == i
+            if hot:
+                S.round_rect(surf, rect, S.PANEL2, 5)
+            S.draw_text(surf, label, (rect.centerx, rect.centery), self.size,
+                        S.ACCENT if hot else S.DIM, True, anchor="center")
+        if self.open is None:
+            return
+        popup = self._popup_rect(self.open)
+        S.panel(surf, popup, S.PANEL, S.LINE, 7)
+        fnt = S.font(12)
+        sfnt = S.font(11)
+        for item, rect in self._item_rects(self.open):
+            if not item.get("enabled", True):
+                S.draw_text(surf, item.get("label", ""), (rect.x + 8, rect.centery),
+                            12, S.DIM2, anchor="midleft")
+                continue
+            if rect.collidepoint(mouse):
+                S.round_rect(surf, rect, S.PANEL3, 5)
+            S.draw_text(surf, item.get("label", ""), (rect.x + 8, rect.centery),
+                        12, S.TEXT, anchor="midleft")
+            if item.get("shortcut"):
+                S.draw_text(surf, item["shortcut"], (rect.right - 8, rect.centery),
+                            11, S.DIM2, anchor="midright")
+
+
 # ---------------------------------------------------------------- 文本
 class TextInput(Widget):
     def __init__(self, rect, value="", placeholder="", numeric=False, size=15, cb=None):
@@ -141,19 +243,25 @@ class TextInput(Widget):
 
 
 class TextArea(Widget):
-    """多行文本域，支持中文输入、方向键、Home/End、Ctrl+Backspace。"""
+    """多行文本域，支持中文输入、方向键、Home/End、Ctrl+Backspace、超宽自动换行。"""
 
-    def __init__(self, rect, value="", size=14, cb=None, line_h=None):
+    def __init__(self, rect, value="", size=14, cb=None, line_h=None, wrap=True):
         self.rect = pygame.Rect(rect)
         self.size = size
         self.cb = cb
+        self.wrap = wrap
         self.lines = str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n") or [""]
         self.row = 0
         self.col = 0
         self.focus = False
         self.blink = 0.0
-        self.scroll = 0
+        self.scroll = 0                    # 以视觉行（换行后）为单位
         self.line_h = line_h or S.font(size).get_height() + 3
+        self._frags = []                   # [(逻辑行, 起列, 止列, 片段文本), ...]
+        self._row_frags = []               # 逻辑行 -> 片段索引列表
+        self._wrap_key = None              # (可用宽度, 文本签名)
+        self._char_w = {}                  # 单字符宽度缓存
+        self._follow_caret = True          # 键盘编辑时自动跟随光标；滚轮滚动时暂停
 
     # -------------------------------------------------- 数据
     def get(self) -> str:
@@ -164,9 +272,20 @@ class TextArea(Widget):
         self.row = 0
         self.col = 0
         self.scroll = 0
+        self._wrap_key = None
+        self._follow_caret = True
 
     def update(self, dt):
         self.blink += dt
+
+    def scroll_by(self, delta_lines: int) -> None:
+        """供外部滚轮调用：只滚动本文本框内容，不惊动外部面板。"""
+        fnt, view = self._nav_ctx()
+        total = max(1, len(self._frags))
+        vis_rows = max(1, int(view.h // self.line_h))
+        limit = max(0, total - vis_rows + 1)
+        self.scroll = max(0, min(limit, self.scroll + int(delta_lines)))
+        self._follow_caret = False          # 不要把主动滚动拉回光标处
 
     def draw(self, surf, mouse, **kw):
         r = self.rect
@@ -174,36 +293,115 @@ class TextArea(Widget):
         S.round_rect(surf, r, S.blend(S.PANEL2, 1.12 if hot else 1.0), 8)
         S.round_rect(surf, r, S.ACCENT if self.focus else S.LINE, 8, 1)
         fnt = S.font(self.size)
-        view = pygame.Rect(r.x + 8, r.y + 6, r.w - 16, r.h - 12)
+        gn, gw, width, view = self._layout()
+        self._rebuild_wrap(fnt, width)
+        frag_i, caret_x = self._caret(fnt)
+        x0 = view.x + gw
+        total = max(1, len(self._frags))
+        vis_rows = max(1, int(view.h // self.line_h))
+        self.scroll = max(0, min(self.scroll, max(0, total - vis_rows + 1)))
+        if self._follow_caret:
+            if frag_i < self.scroll:
+                self.scroll = frag_i
+            if frag_i >= self.scroll + vis_rows - 1:
+                self.scroll = frag_i - vis_rows + 2
         old = surf.get_clip()
         surf.set_clip(view)
-        # 行号
-        vis_rows = int(view.h // self.line_h)
-        self.scroll = max(0, min(self.scroll, max(0, len(self.lines) - vis_rows + 1)))
-        if self.row < self.scroll:
-            self.scroll = self.row
-        if self.row >= self.scroll + vis_rows - 1:
-            self.scroll = self.row - vis_rows + 2
-        gn = S.font(self.size - 2)
-        gw = max(gn.size(str(len(self.lines)))[0] + 8, 18)
-        x0 = view.x + gw
-        for i in range(self.scroll, min(len(self.lines), self.scroll + vis_rows)):
-            y = view.y + (i - self.scroll) * self.line_h
-            num = gn.render(str(i + 1), True, S.DIM2)
-            surf.blit(num, (view.x + gw - num.get_width() - 4, y + 1))
-            txt = self.lines[i]
-            img = fnt.render(txt, True, S.TEXT)
-            if img.get_width() > view.w - gw:
-                # 简易横向滚动：尾部对齐光标行
-                img = fnt.render(txt, True, S.TEXT)
-                x = x0 - max(0, img.get_width() - (view.w - gw) + 10)
-            else:
-                x = x0
-            surf.blit(img, (x, y))
-            if self.focus and i == self.row and int(self.blink * 2) % 2 == 0:
-                cx = x + fnt.size(txt[:self.col])[0]
+        for fi in range(self.scroll, min(total, self.scroll + vis_rows)):
+            row, start, _end, seg = self._frags[fi]
+            y = view.y + (fi - self.scroll) * self.line_h
+            if start == 0:                      # 只在逻辑行首显示行号
+                num = gn.render(str(row + 1), True, S.DIM2)
+                surf.blit(num, (view.x + gw - num.get_width() - 4, y + 1))
+            surf.blit(fnt.render(seg, True, S.TEXT), (x0, y))
+            if self.focus and fi == frag_i and int(self.blink * 2) % 2 == 0:
+                cx = x0 + caret_x
                 pygame.draw.line(surf, S.ACCENT, (cx, y), (cx, y + self.line_h - 2), 1)
         surf.set_clip(old)
+
+    # -------------------------------------------------- 自动换行辅助
+    def _layout(self):
+        """返回 (行号字体, 行号宽, 文本可用宽, 文本视图矩形)。"""
+        view = pygame.Rect(self.rect.x + 8, self.rect.y + 6,
+                           self.rect.w - 16, self.rect.h - 12)
+        gn = S.font(self.size - 2)
+        gw = max(gn.size(str(len(self.lines)))[0] + 8, 18)
+        width = max(10, view.w - gw) if self.wrap else 100000
+        return gn, gw, width, view
+
+    def _width_of(self, fnt, ch: str) -> int:
+        cw = self._char_w.get(ch)
+        if cw is None:
+            cw = fnt.size(ch)[0]
+            self._char_w[ch] = cw
+        return cw
+
+    def _rebuild_wrap(self, fnt, width: int) -> None:
+        sig = (width, tuple(self.lines))
+        if self._wrap_key == sig:
+            return
+        self._wrap_key = sig
+        frags, row_frags = [], []
+        for ri, line in enumerate(self.lines):
+            idxs = []
+            if not self.wrap:
+                frags.append((ri, 0, len(line), line))
+                idxs.append(len(frags) - 1)
+                row_frags.append(idxs)
+                continue
+            seg_start, x, space_at = 0, 0, -1
+            for ci, ch in enumerate(line):
+                cw = self._width_of(fnt, ch)
+                if x + cw > width and ci > seg_start:
+                    end = space_at if space_at > seg_start else ci
+                    frags.append((ri, seg_start, end, line[seg_start:end]))
+                    idxs.append(len(frags) - 1)
+                    seg_start = end
+                    x = sum(self._width_of(fnt, c) for c in line[seg_start:ci + 1])
+                    space_at = -1
+                else:
+                    x += cw
+                    if ch in (" ", "\t"):
+                        space_at = ci + 1
+            frags.append((ri, seg_start, len(line), line[seg_start:]))
+            idxs.append(len(frags) - 1)
+            row_frags.append(idxs)
+        self._frags = frags
+        self._row_frags = row_frags
+
+    def _caret(self, fnt):
+        """把 (row, col) 映射为 (视觉片段索引, 片段内 x 偏移)。"""
+        row = max(0, min(len(self.lines) - 1, self.row))
+        col = max(0, min(len(self.lines[row]), self.col))
+        idxs = self._row_frags[row] if row < len(self._row_frags) else []
+        if not idxs:
+            return 0, 0
+        fi = idxs[-1]
+        for cand in idxs:
+            if col < self._frags[cand][2] or cand == idxs[-1]:
+                fi = cand
+                break
+        _r, start, _end, seg = self._frags[fi]
+        return fi, fnt.size(seg[:max(0, col - start)])[0]
+
+    def _frag_col(self, fnt, fi: int, xoff: int) -> int:
+        """在指定视觉片段中找最接近 x 偏移的字符列（绝对列）。"""
+        _r, start, _end, seg = self._frags[fi]
+        col, acc = start, 0
+        for p, ch in enumerate(seg):
+            cw = self._width_of(fnt, ch)
+            if acc + cw > xoff:
+                break
+            acc += cw
+            col = start + p + 1
+        return col
+
+    def _nav_ctx(self):
+        """键盘导航前确保换行数据是最新的，返回 (字体, 视图矩形)。"""
+        fnt = S.font(self.size)
+        _gn, _gw, width, view = self._layout()
+        self._rebuild_wrap(fnt, width)
+        return fnt, view
 
     # -------------------------------------------------- 编辑
     def _clamp_col(self):
@@ -213,6 +411,8 @@ class TextArea(Widget):
     def handle(self, ev):
         if not self.focus:
             return False
+        if ev.type in (pygame.TEXTINPUT, pygame.KEYDOWN):
+            self._follow_caret = True        # 重新编辑后恢复光标跟随
         mods = pygame.key.get_mods()
         ctrl = bool(mods & pygame.KMOD_CTRL)
         if ev.type == pygame.TEXTINPUT:
@@ -250,12 +450,25 @@ class TextArea(Widget):
                     self.lines[self.row] = line + self.lines.pop(self.row + 1)
                 return True
             if k == pygame.K_UP:
-                self.row -= 1
-                self._clamp_col()
+                fnt, _view = self._nav_ctx()
+                fi, xoff = self._caret(fnt)
+                if fi > 0:
+                    fi -= 1
+                    self.row = self._frags[fi][0]
+                    self.col = self._frag_col(fnt, fi, xoff)
+                else:
+                    self.row, self.col = 0, 0
                 return True
             if k == pygame.K_DOWN:
-                self.row += 1
-                self._clamp_col()
+                fnt, _view = self._nav_ctx()
+                fi, xoff = self._caret(fnt)
+                if fi < len(self._frags) - 1:
+                    fi += 1
+                    self.row = self._frags[fi][0]
+                    self.col = self._frag_col(fnt, fi, xoff)
+                else:
+                    self.row = len(self.lines) - 1
+                    self.col = len(self.lines[self.row])
                 return True
             if k == pygame.K_LEFT:
                 if self.col > 0:
@@ -272,18 +485,37 @@ class TextArea(Widget):
                     self.col = 0
                 return True
             if k == pygame.K_HOME:
-                self.col = 0
+                if ctrl:
+                    self.row, self.col = 0, 0
+                else:
+                    fnt, _view = self._nav_ctx()
+                    fi, _x = self._caret(fnt)
+                    self.col = self._frags[fi][1]   # 当前视觉行首
                 return True
             if k == pygame.K_END:
-                self.col = len(line)
+                if ctrl:
+                    self.row = len(self.lines) - 1
+                    self.col = len(self.lines[self.row])
+                else:
+                    fnt, _view = self._nav_ctx()
+                    fi, _x = self._caret(fnt)
+                    self.col = self._frags[fi][2]   # 当前视觉行尾
                 return True
             if k == pygame.K_PAGEUP:
-                self.row = max(0, self.row - 6)
-                self._clamp_col()
+                fnt, view = self._nav_ctx()
+                fi, xoff = self._caret(fnt)
+                step = max(1, int(view.h // self.line_h) - 1)
+                fi = max(0, fi - step)
+                self.row = self._frags[fi][0]
+                self.col = self._frag_col(fnt, fi, xoff)
                 return True
             if k == pygame.K_PAGEDOWN:
-                self.row = min(len(self.lines) - 1, self.row + 6)
-                self._clamp_col()
+                fnt, view = self._nav_ctx()
+                fi, xoff = self._caret(fnt)
+                step = max(1, int(view.h // self.line_h) - 1)
+                fi = min(len(self._frags) - 1, fi + step)
+                self.row = self._frags[fi][0]
+                self.col = self._frag_col(fnt, fi, xoff)
                 return True
         return False
 
@@ -486,7 +718,7 @@ class GridEditor(Widget):
                 else:
                     S.round_rect(surf, rc.inflate(-2, -2), S.LINE, 3, 1)
         if self.locked:
-            img = S.font(11).render("内置形状，点「复制」后再改", True, S.DIM)
+            img = S.font(11).render("内置只读 · 复制后可改", True, S.DIM)
             surf.blit(img, (self.rect.x + 2, self.rect.bottom - img.get_height() - 1))
 
     def handle_click(self, pos):

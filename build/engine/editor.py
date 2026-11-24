@@ -27,7 +27,15 @@ GOAL_LABELS = {"reach_row": "抵达顶层行", "survive": "坚持时间",
 
 TABS = ["基本", "玩法", "形状", "目标/失败", "VFX", "事件/剧本"]
 TAB_BASIC, TAB_PLAY, TAB_SHAPE, TAB_GOAL, TAB_VFX, TAB_EVENT = range(len(TABS))
+TAB_LABELS = ["基本", "玩法", "形状", "目标", "VFX", "剧本"]
 GRID_N = 6
+
+HELP_LINES = [
+    "Ctrl+S 保存 · Ctrl+E 试演 · Tab 切换左侧标签页 · Esc 返回菜单",
+    "中间舞台：左键用当前画笔绘制地形，右键擦除，Shift+点击设置出生列",
+    "左侧「剧本」页管理事件与脚本；右侧常驻显示当前事件的触发属性",
+    "F1 打开 / 关闭本帮助 · 文件菜单可保存、载入、导入、导出与返回",
+]
 
 
 class EditorScene:
@@ -61,97 +69,175 @@ class EditorScene:
         self.cur_shape = 0            # 当前编辑的形状序号（内置在前）
         self.level.ensure_events_list()
         L.register_level_shapes(self.level)
-        self.scroll = 0
+        self.scroll = 0                  # 左侧标签页内容的滚动
+        self.prop_scroll = 0             # 右侧事件属性栏的滚动
+        self._drag_scroll = None         # 左键拖动滚动条：(区域, 抓取偏移, body, content_h)
+        self.help_open = False
+        self._built_size = None
+        self.left_widgets: list = []
+        self.prop_widgets: list = []
+        self.meta_widgets: list = []
+        self.chrome_widgets: list = []
+        self.brush_rects: list = []
         self._labels: list = []
+        self._prop_labels: list = []
         self._build()
 
     # ============================================================ 布局
     def _rects(self, w, h):
-        right_w = 420
-        top_y = 26
-        top = pygame.Rect(16, top_y, w - 32, 32)
-        canvas = pygame.Rect(16, 118, w - right_w - 40, h - 118 - 40)
-        pal = pygame.Rect(16, 66, w - right_w - 40, 40)
-        right = pygame.Rect(w - right_w - 8, 66, right_w, h - 82)
-        return {"canvas": canvas, "palette": pal, "right": right, "top": top}
+        """草图布局：顶部菜单 + 左侧标签页 + 中间游戏画面 + 右侧事件属性。"""
+        m = 8
+        gap = 10
+        top_h = 28
+        tab_h = 24
+        bottom = h - 34
+        left_w = max(190, min(252, int(w * 0.22)))
+        right_w = max(206, min(286, int(w * 0.22)))
+        left = pygame.Rect(m, top_h + tab_h, left_w,
+                           max(120, bottom - top_h - tab_h - m))
+        tabs = pygame.Rect(m, top_h, left_w, tab_h)
+        right_x = w - m - right_w
+        center_x = left.right + gap
+        center = pygame.Rect(center_x, top_h,
+                             max(180, right_x - gap - center_x),
+                             max(120, bottom - top_h - m))
+        right = pygame.Rect(right_x, top_h, right_w,
+                            max(120, bottom - top_h - m))
+        meta = pygame.Rect(left.x + 8, left.y + 6, left.w - 16, 52)
+        left_body = pygame.Rect(left.x + 8, meta.bottom + 8,
+                                left.w - 16,
+                                max(80, left.bottom - 8 - (meta.bottom + 8)))
+        right_body = pygame.Rect(right.x + 8, right.y + 30,
+                                 right.w - 16,
+                                 max(80, right.bottom - 8 - (right.y + 30)))
+        pal = pygame.Rect(center.x + 8, center.bottom - 36, center.w - 16, 28)
+        stage = pygame.Rect(center.x + 8, center.y + 8,
+                            center.w - 16,
+                            max(80, pal.y - 8 - (center.y + 8)))
+        return {
+            "left": left, "tabs": tabs, "left_body": left_body, "meta": meta,
+            "canvas": center, "stage": stage, "palette": pal,
+            "right": right, "right_body": right_body,
+            "menu": pygame.Rect(m, 5, w - 100, 20),
+            "test": pygame.Rect(w - 82, 3, 74, 25),
+        }
 
     # ============================================================ 构建
     def _build(self):
         w, h = self.app.screen.get_size()
+        if getattr(self, "_built_size", None) and self._built_size != (w, h):
+            # 窗口缩放时先把当前控件里的修改写回数据，避免重建后丢失
+            self._sync()
+        self._built_size = (w, h)
         rt = self._rects(w, h)
+        if getattr(self, "focus", None) is not None:
+            self.focus = None
+            pygame.key.stop_text_input()
+
         self.inputs: list = []
         self.clicks: list = []
+        self._labels = []
+        self._prop_labels = []
+        self.brush_rects = []
 
-        # 右侧标签页
-        r = rt["right"]
-        tabs = TABS
+        # 左侧标签页（草图中标签位于左栏上方）
         self.tab_buttons = []
-        tw = (r.w - 8) // len(tabs)
-        for i, name in enumerate(tabs):
+        tw = max(28, rt["tabs"].w // len(TABS))
+        for i, name in enumerate(TAB_LABELS):
             self.tab_buttons.append(
-                ui.Button(pygame.Rect(r.x + i * tw, r.y, tw - 4, 28), name,
-                          (lambda i=i: self._set_tab(i)), 13,
+                ui.Button(pygame.Rect(rt["tabs"].x + i * tw, rt["tabs"].y,
+                                      tw - 2, rt["tabs"].h), name,
+                          (lambda i=i: self._set_tab(i)), 11,
                           "primary" if i == self.tab else "ghost"))
-        self.clicks += self.tab_buttons
 
-        body = pygame.Rect(r.x, r.y + 36, r.w - 8, r.h - 36)
-        self.body = body
-        self._build_tab(body)
+        # 左侧页内容
+        self.body = rt["left_body"]
+        self._build_tab(rt["left_body"])
+        # 列表型控件（事件行、形状行、方块池 / VFX 开关）只存在列表里，
+        # 不能只靠扫描实例属性，否则它们不会被绘制和命中。
+        left_existing = list(self.clicks)
+        for group in (getattr(self, "event_rows", []),
+                      getattr(self, "shape_rows", []),
+                      getattr(self, "pool_toggles", []),
+                      getattr(self, "vfx_toggles", [])):
+            for wi in group:
+                if wi not in left_existing:
+                    left_existing.append(wi)
+        for wi in self._collect_widgets():
+            if wi not in left_existing:
+                left_existing.append(wi)
 
-        # 顶栏：输入框按比例分配剩余宽度，按钮组固定在右侧，任何窗口宽度都不重叠
-        top = rt["top"]
-        gap = 6
-        btn_sizes = [70, 76, 56, 56, 56, 58, 60]   # 保存/另存为/载入/导入/导出/试演/返回
-        need = sum(btn_sizes) + gap * (len(btn_sizes) - 1)
-        if top.width - need < 300:                 # 窄窗口：整体等比缩小按钮
-            k = max(0.68, (top.width - 300) / max(1, need))
-            btn_sizes = [max(40, int(s * k)) for s in btn_sizes]
-        btn_total = sum(btn_sizes) + gap * (len(btn_sizes) - 1)
-        avail = max(260, top.width - btn_total - 14)
-        total = max(220, avail - 3 * gap)      # 预留 3 个间隙，避免与按钮组相撞
-        ratios = (0.21, 0.30, 0.31, 0.18)
-        widths = [int(total * r) for r in ratios]
-        widths[-1] = total - sum(widths[:-1])  # 保证总和恰好等于可用宽度
-        x = top.x
-        rects = []
-        for wd in widths:
-            rects.append(pygame.Rect(x, top.y, wd, 30))
-            x += wd + gap
-        self.in_id = ui.TextInput(rects[0], self.level.id, "关卡 ID", size=13)
-        self.in_title = ui.TextInput(rects[1], self.level.get("title", ""), "演出标题",
-                                    size=13)
-        self.in_sub = ui.TextInput(rects[2], self.level.get("subtitle", ""), "副标题",
-                                   size=13)
-        self.in_author = ui.TextInput(rects[3], self.level.get("author", ""), "作者",
-                                     size=13)
-        self.inputs += [self.in_id, self.in_title, self.in_sub, self.in_author]
+        # 顶栏与关卡信息（在标签内容之后创建，避免被分页重建清掉）
+        self._build_chrome(rt)
+        chrome = [self.menubar, self.b_test] + self.meta_widgets
 
-        bx = top.right - btn_total
-        self.b_save = ui.Button(pygame.Rect(bx, top.y, btn_sizes[0], 30),
-                                "保存", self.save, 13, "primary")
-        bx += btn_sizes[0] + gap
-        self.b_saveas = ui.Button(pygame.Rect(bx, top.y, btn_sizes[1], 30),
-                                  "另存为", self.save_as, 13)
-        bx += btn_sizes[1] + gap
-        self.b_load = ui.Button(pygame.Rect(bx, top.y, btn_sizes[2], 30),
-                                "载入", self.load_dialog, 12)
-        bx += btn_sizes[2] + gap
-        self.b_import = ui.Button(pygame.Rect(bx, top.y, btn_sizes[3], 30),
-                                  "导入", self.import_file, 12)
-        bx += btn_sizes[3] + gap
-        self.b_export = ui.Button(pygame.Rect(bx, top.y, btn_sizes[4], 30),
-                                  "导出", self.export_file, 12)
-        bx += btn_sizes[4] + gap
-        self.b_test = ui.Button(pygame.Rect(bx, top.y, btn_sizes[5], 30),
-                                "试演", self.test, 13, "primary")
-        bx += btn_sizes[5] + gap
-        self.b_back = ui.Button(pygame.Rect(bx, top.y, btn_sizes[6], 30),
-                                "返回", self.back, 13, "ghost")
-        self.clicks += [self.b_save, self.b_saveas, self.b_load, self.b_import,
-                        self.b_export, self.b_test, self.b_back]
-        self._top_widgets = [self.in_id, self.in_title, self.in_sub, self.in_author,
-                             self.b_save, self.b_saveas, self.b_load, self.b_import,
-                             self.b_export, self.b_test, self.b_back]
+        # 右侧事件属性常驻
+        self.prop_body = rt["right_body"]
+        self._build_event_props(rt["right_body"])
+        all_widgets = self._collect_widgets()
+        self.left_widgets = [wi for wi in left_existing if wi not in chrome]
+        self.prop_widgets = [wi for wi in all_widgets
+                             if wi not in left_existing and wi not in chrome]
+        self.clicks = (self.left_widgets + self.prop_widgets + chrome
+                       + self.tab_buttons)
+        self.chrome_widgets = chrome
+
+        self.scroll = max(0, min(self.scroll, self.max_left_scroll()))
+        self.prop_scroll = max(0, min(self.prop_scroll, self.max_prop_scroll()))
+
+    def _collect_widgets(self) -> list:
+        from .ui import Widget as _W
+        return [v for v in vars(self).values() if isinstance(v, _W)]
+
+    def _build_chrome(self, rt):
+        self.menubar = ui.MenuBar(rt["menu"], self._menu_defs(), 12)
+        self.b_test = ui.Button(rt["test"], "试演", self.test, 12, "primary")
+        m = rt["meta"]
+        mh = 23
+        mw = (m.w - 6) // 2
+        r1 = pygame.Rect(m.x, m.y, mw, mh)
+        r2 = pygame.Rect(m.x + mw + 6, m.y, mw, mh)
+        r3 = pygame.Rect(m.x, m.y + mh + 4, mw, mh)
+        r4 = pygame.Rect(m.x + mw + 6, m.y + mh + 4, mw, mh)
+        self.in_id = ui.TextInput(r1, self.level.id, "关卡 ID", size=11)
+        self.in_title = ui.TextInput(r2, self.level.get("title", ""), "演出标题",
+                                     size=11)
+        self.in_sub = ui.TextInput(r3, self.level.get("subtitle", ""), "副标题",
+                                   size=11)
+        self.in_author = ui.TextInput(r4, self.level.get("author", ""), "作者",
+                                      size=11)
+        self.meta_widgets = [self.in_id, self.in_title, self.in_sub, self.in_author]
+        self.inputs += self.meta_widgets
+
+    def _menu_defs(self):
+        return [
+            ("文件", [
+                {"label": "保存", "shortcut": "Ctrl+S", "cb": self.save},
+                {"label": "另存为", "cb": self.save_as},
+                {"label": "载入下一关", "cb": self.load_dialog},
+                "---",
+                {"label": "导入演出", "cb": self.import_file},
+                {"label": "导出演出", "cb": self.export_file},
+                "---",
+                {"label": "返回菜单", "shortcut": "Esc", "cb": self.back},
+            ]),
+            ("编辑", [
+                {"label": "上一页", "cb": lambda: self._set_tab(
+                    (self.tab - 1) % len(TABS))},
+                {"label": "下一页", "shortcut": "Tab", "cb": lambda: self._set_tab(
+                    (self.tab + 1) % len(TABS))},
+                "---",
+                {"label": "新增剧本事件", "cb": self._new_event},
+                {"label": "复制当前事件", "cb": self._dup_event},
+                {"label": "删除当前事件", "cb": self._del_event},
+            ]),
+            ("帮助", [
+                {"label": "快捷键说明", "shortcut": "F1",
+                 "cb": self._toggle_help},
+                {"label": "关于编辑器", "cb": lambda: self._flash(
+                    f"虚质方块二创编辑器 v{S.APP_VERSION}")},
+            ]),
+        ]
 
     def _set_tab(self, i):
         if self.tab == i:
@@ -212,10 +298,9 @@ class EditorScene:
                 setattr(self, "in_ft_" + key, ti)
                 y += 30
             y += 4
-            self._label(cx, y, "画笔：先在左侧调色板选色，再在舞台上拖动绘制地形；"
-                               "右键 / 退格擦除。", 11, S.DIM2)
+            self._label(cx, y, "画笔在画布底部；左键绘制，右键擦除", 11, S.DIM2)
             y += 18
-            self._label(cx, y, "提示：按住 Shift 点击舞台可设置小人出生列。", 11, S.PURPLE)
+            self._label(cx, y, "Shift+点击舞台设置出生列", 11, S.PURPLE)
 
         elif self.tab == 1:    # 玩法
             self._label(cx, y, "方块"); y += 16
@@ -226,13 +311,12 @@ class EditorScene:
                                      None, HOVER_LABELS)
             self.t_rot = ui.Toggle(row(26), "允许随机旋转",
                                    bool(blocks.get("allow_rotation", True)))
-            self.t_prot = ui.Toggle(row(26), "玩家可旋转方块（X 键）",
+            self.t_prot = ui.Toggle(row(26), "玩家可旋转（X）",
                                     bool(blocks.get("player_rotate", True)))
-            self.t_quick = ui.Toggle(row(26), "玩家可催落方块（↓ / S，无视倒计时）",
+            self.t_quick = ui.Toggle(row(26), "玩家可催落（↓/S）",
                                      bool(blocks.get("quick_drop", True)))
             self.t_line = ui.Toggle(row(26), "填满一行即消行",
-                                    bool(blocks.get("line_clear", False)),
-                                    hint="开启后台阶会被消掉")
+                                    bool(blocks.get("line_clear", False)))
             self.t_prev = ui.Toggle(row(26), "显示下一块预览",
                                     bool(blocks.get("preview", True)))
             self.st_conc = ui.Stepper(row(26), "同时在场的方块数",
@@ -342,8 +426,8 @@ class EditorScene:
                                             self._write_shape_color,
                                             S.SHAPE_COLOR_NAMES)
             y += 32
-            self._label(cx, y, f"格子：点击切换（{GRID_N}×{GRID_N}，"
-                               f"剧本可用 drop {cur.get('id', '')} 调用）", 11, S.DIM2)
+            self._label(cx, y, f"格子 {GRID_N}×{GRID_N} · drop {cur.get('id', '')}",
+                        11, S.DIM2)
             y += 16
             grid_h = min(180, max(120, cw // 3))
             self.grid = ui.GridEditor(pygame.Rect(cx, y, cw, grid_h), GRID_N, GRID_N,
@@ -351,8 +435,8 @@ class EditorScene:
             self.grid.locked = not cur.get("custom", False)
             y += grid_h + 6
             y += 4
-            self._label(cx, y, "提示：形状会自动生成 4 个朝向；在「玩法」页把它勾进方块池，"
-                               "或用 drop 指令直接投放。", 11, S.DIM2)
+            self._label(cx, y, "提示：自动生成 4 个朝向，可入池或 drop 投放",
+                        11, S.DIM2)
             y += 30
 
         elif self.tab == TAB_GOAL:    # 目标 / 失败
@@ -383,11 +467,10 @@ class EditorScene:
             self.t_over = ui.Toggle(row(26), "舞台被填满",
                                     bool(fail.get("overflow", True)))
             y += 8
-            self._label(cx, y, "说明：勾选后才会计入失败判定；取消勾选则该情形不再终止演出。",
-                        11, S.DIM2)
+            self._label(cx, y, "勾选后才计入失败判定", 11, S.DIM2)
 
         elif self.tab == TAB_VFX:    # VFX
-            self._label(cx, y, "点击开关视觉特效（可在剧本中用 vfx 指令动态开关）")
+            self._label(cx, y, "点击开关 VFX（剧本可用 vfx 指令切换）", 11)
             y += 20
             enabled = set(d.get("vfx") or [])
             self.vfx_toggles = []
@@ -398,17 +481,16 @@ class EditorScene:
                     bx = cx
                     y += 30
                 tg = ui.Toggle(pygame.Rect(bx, y, tw, 24),
-                               f"{RENDER_NAME.get(name, name)} · {name}",
-                               name in enabled)
+                               RENDER_NAME.get(name, name), name in enabled)
                 tg.vfx_name = name
                 self.vfx_toggles.append(tg)
                 bx += tw + 6
             y += 34
-            self._label(cx, y, "已启用的 VFX 会写入关卡，演出一开始即生效。", 11, S.DIM2)
+            self._label(cx, y, "启用后演出开始即生效", 11, S.DIM2)
 
-        else:                  # 事件 / 剧本（可无限增加，触发时机可自定义）
+        else:                  # 剧本：事件列表 + 脚本编辑（属性在右侧常驻）
             evs = self.level.ensure_events_list()
-            self._label(cx, y, f"事件列表（{len(evs)} 条 · 可无限增加）")
+            self._label(cx, y, f"剧本事件（{len(evs)} 条）")
             y += 16
             self.event_rows = []
             for i, ev in enumerate(evs):
@@ -430,87 +512,17 @@ class EditorScene:
             y += 32
             ev = evs[self.cur_event_i] if 0 <= self.cur_event_i < len(evs) else None
             if ev is None:
-                self._label(cx, y, "还没有事件：点「＋新增」添加一条，"
-                                   "再选触发时机并写剧本。", 12, S.DIM2)
+                self._label(cx, y, "还没有事件：点「＋新增」添加一条，触发属性在右侧设置。",
+                            11, S.DIM2)
                 y += 24
             else:
-                trig = str(ev.get("trigger") or "on_lock")
-                idx = L.TRIGGER_KEYS.index(trig) if trig in L.TRIGGER_KEYS else 0
-                self.c_etrig = ui.Choice(row(26), "触发时机", L.TRIGGER_KEYS, idx,
-                                         self._change_trigger,
-                                         [L.trigger_name(t) for t in L.TRIGGER_KEYS])
-                kind = L.TRIGGER_KINDS.get(trig)
-                if kind == "int":
-                    unit = "秒" if trig == "on_time" else ""
-                    self.st_eparam = ui.Stepper(
-                        row(26), f"参数{f'（{unit}）' if unit else ''}",
-                        int(ev.get("param") or 0), 0,
-                        max(0, d["stage"]["height"] - 1) if trig in ("on_row", "on_height")
-                        else 600, 1, self._change_param, "{:g}")
-                elif kind == "float":
-                    self.st_eparam = ui.Stepper(row(26), "参数（秒）",
-                                                float(ev.get("param") or 0),
-                                                0, 600, 0.5, self._change_param, "{:.1f}")
-                elif kind == "shape":
-                    kinds = list(ALL_KINDS) + [str(s["id"])
-                                               for s in self.level.shapes_list()]
-                    cur = str(ev.get("param") or kinds[0])
-                    if cur not in kinds:
-                        kinds.append(cur)
-                    self.c_eparam = ui.Choice(row(26), "形状", kinds,
-                                              kinds.index(cur), self._change_param)
-                elif kind == "key":
-                    self.in_eparam = ui.TextInput(row(26),
-                                                  str(ev.get("param") or "space"),
-                                                  "按键名（如 x / space）", size=13)
-                    self.inputs.append(self.in_eparam)
-                self.t_eonce = ui.Toggle(row(24), "只触发一次",
-                                         bool(ev.get("once", True)),
-                                         self._change_once)
-                self.c_mode = ui.Choice(row(26), "演出方式", list(L.MODES),
-                                        0 if str(ev.get("mode")) == "ambient" else 1,
-                                        None, [L.MODE_LABELS[m] for m in L.MODES])
-                avail = body.bottom - y - 104
-                self.ta = ui.TextArea(pygame.Rect(cx, y, cw, max(80, avail)),
-                                      str(ev.get("script", "")), size=13)
+                self._label(cx, y, "事件脚本", 12, S.PURPLE)
+                y += 18
+                avail = body.bottom - y - 8
+                self.ta = ui.TextArea(pygame.Rect(cx, y, cw, max(90, avail)),
+                                      str(ev.get("script", "")), size=12)
                 self.inputs.append(self.ta)
-                y += max(80, avail) + 4
-
-            # 投放方块助手：把 drop <形状> <列> 插进当前剧本行
-            kinds = list(ALL_KINDS) + [str(s["id"]) for s in self.level.shapes_list()]
-            self.c_dkind = ui.Choice(pygame.Rect(cx, body.bottom - 94, 96, 26),
-                                     "形状", kinds, 0, None)
-            self.st_dcol = ui.Stepper(pygame.Rect(cx + 102, body.bottom - 94, 90, 26),
-                                      "列", 0, 0, max(0, d["stage"]["width"] - 1), 1,
-                                      None, "{:g}")
-            self.b_drop = ui.Button(pygame.Rect(cx + 198, body.bottom - 94, 76, 26),
-                                    "插 drop", self._ins_drop, 12)
-            self.clicks += [self.c_dkind, self.st_dcol, self.b_drop]
-
-            # 音效 / 音乐插入助手
-            _audio = self._audio()
-            level_files = _audio.list_files() if _audio else []
-            sfx_names = Audio.list_sfx() + level_files
-            sfx_labels = [f"{SFX_LABELS.get(n, n)} · {n}" for n in Audio.list_sfx()] \
-                + [f"文件 · {n}" for n in level_files]
-            self.c_snd = ui.Choice(pygame.Rect(cx, body.bottom - 62, cw - 200, 26),
-                                   "音效", sfx_names, 0, None, sfx_labels)
-            self.b_sndtest = ui.Button(pygame.Rect(cx + cw - 194, body.bottom - 62, 58, 26),
-                                       "试听", self._test_sfx, 12)
-            self.b_sndsfx = ui.Button(pygame.Rect(cx + cw - 132, body.bottom - 62, 62, 26),
-                                      "插 sfx", self._ins_sfx, 12)
-            self.b_sndbgm = ui.Button(pygame.Rect(cx + cw - 66, body.bottom - 62, 62, 26),
-                                      "插 bgm", self._ins_bgm, 12)
-            self.clicks += [self.c_snd, self.b_sndtest, self.b_sndsfx, self.b_sndbgm]
-
-            stories = L.list_stories()
-            if stories:
-                names = [os.path.splitext(s)[0] for s in stories]
-                self.c_story = ui.Choice(pygame.Rect(cx, body.bottom - 30, cw - 96, 26),
-                                         "插入剧情文件", stories, 0, None, names)
-                self.b_story = ui.Button(pygame.Rect(body.right - 92, body.bottom - 30,
-                                                     88, 26), "载入", self._load_story, 12)
-                self.clicks += [self.c_story, self.b_story]
+                y += max(90, avail) + 4
 
         # 收集可点击控件
         for obj in list(vars(self).values()):
@@ -524,26 +536,138 @@ class EditorScene:
             if tg not in self.clicks:
                 self.clicks.append(tg)
 
-        # 内容总高（用于滚动）
-        self.content_h = max(0, y - body.y)
-        self.scroll = max(0, min(self.scroll, self.max_scroll()))
+        # 内容总高（用于左侧滚动）
+        self.left_content_h = max(0, y - body.y)
+        self.scroll = max(0, min(self.scroll, self.max_left_scroll()))
+
+    def _build_event_props(self, body):
+        """右侧常驻：当前剧本事件的触发属性与指令插入助手。"""
+        self._prop_labels = []
+        prop_names = ("c_etrig", "st_eparam", "c_eparam", "in_eparam",
+                      "t_eonce", "c_mode", "c_dkind", "st_dcol", "b_drop",
+                      "c_snd", "b_sndtest", "b_sndsfx", "b_sndbgm",
+                      "c_story", "b_story")
+        for name in prop_names:
+            old = getattr(self, name, None)
+            if old is not None:
+                if old in self.inputs:
+                    self.inputs.remove(old)
+                delattr(self, name)
+
+        d = self.level.data
+        cx = body.x + 2
+        cw = body.w - 4
+        y = body.y + 2
+
+        def row(hgt=26, gap=5):
+            nonlocal y
+            r = pygame.Rect(cx, y, cw, hgt)
+            y += hgt + gap
+            return r
+
+        evs = self.level.ensure_events_list()
+        ev = evs[self.cur_event_i] if 0 <= self.cur_event_i < len(evs) else None
+        if ev is None:
+            self._prop_label(cx, y, "尚未选择事件", 12, S.DIM)
+            y += 20
+            self._prop_label(cx, y, "在左侧「剧本」页新增或选择一条事件后，",
+                             11, S.DIM2)
+            y += 16
+            self._prop_label(cx, y, "这里会显示它的触发时机与参数。", 11, S.DIM2)
+            y += 20
+        else:
+            summary = L.trigger_label(ev.get("trigger"), ev.get("param"))
+            for line in S.wrap(summary, S.font(11, True), cw)[:2]:
+                self._prop_label(cx, y, line, 11, S.PURPLE, True)
+                y += 15
+            y += 4
+            trig = str(ev.get("trigger") or "on_lock")
+            idx = L.TRIGGER_KEYS.index(trig) if trig in L.TRIGGER_KEYS else 0
+            self.c_etrig = ui.Choice(row(26), "触发时机", L.TRIGGER_KEYS, idx,
+                                     self._change_trigger,
+                                     [L.trigger_name(t) for t in L.TRIGGER_KEYS])
+            kind = L.TRIGGER_KINDS.get(trig)
+            if kind == "int":
+                hi = (max(0, d["stage"]["height"] - 1)
+                      if trig in ("on_row", "on_height") else 600)
+                self.st_eparam = ui.Stepper(row(26), "参数", int(ev.get("param") or 0),
+                                            0, hi, 1, self._change_param, "{:g}")
+            elif kind == "float":
+                self.st_eparam = ui.Stepper(row(26), "秒数",
+                                            float(ev.get("param") or 0),
+                                            0, 600, 0.5, self._change_param, "{:.1f}")
+            elif kind == "shape":
+                kinds = list(ALL_KINDS) + [str(s["id"])
+                                           for s in self.level.shapes_list()]
+                cur = str(ev.get("param") or kinds[0])
+                if cur not in kinds:
+                    kinds.append(cur)
+                self.c_eparam = ui.Choice(row(26), "形状", kinds,
+                                          kinds.index(cur), self._change_param)
+            elif kind == "key":
+                self.in_eparam = ui.TextInput(row(26),
+                                              str(ev.get("param") or "space"),
+                                              "按键名（如 x / space）", size=11)
+                self.inputs.append(self.in_eparam)
+            self.t_eonce = ui.Toggle(row(24), "只触发一次",
+                                     bool(ev.get("once", True)), self._change_once)
+            self.c_mode = ui.Choice(row(26), "演出方式", list(L.MODES),
+                                    0 if str(ev.get("mode")) == "ambient" else 1,
+                                    None, ["自动", "确认"])
+            y += 6
+
+        self._prop_label(cx, y, "插入指令到当前脚本", 12, S.ACCENT, True)
+        y += 20
+        kinds = list(ALL_KINDS) + [str(s["id"]) for s in self.level.shapes_list()]
+        self.c_dkind = ui.Choice(row(26), "形状", kinds, 0, None)
+        self.st_dcol = ui.Stepper(row(26), "投放列", 0, 0,
+                                  max(0, d["stage"]["width"] - 1), 1, None, "{:g}")
+        self.b_drop = ui.Button(pygame.Rect(cx, y, cw, 24),
+                                "插入 drop", self._ins_drop, 11, "primary")
+        y += 30
+
+        _audio = self._audio()
+        level_files = _audio.list_files() if _audio else []
+        sfx_names = Audio.list_sfx() + level_files
+        sfx_labels = [f"{SFX_LABELS.get(n, n)} · {n}" for n in Audio.list_sfx()] \
+            + [f"文件 · {n}" for n in level_files]
+        self.c_snd = ui.Choice(row(26), "音效", sfx_names, 0, None, sfx_labels)
+        bw = (cw - 8) // 3
+        self.b_sndtest = ui.Button(pygame.Rect(cx, y, bw, 24),
+                                   "试听", self._test_sfx, 11)
+        self.b_sndsfx = ui.Button(pygame.Rect(cx + bw + 4, y, bw, 24),
+                                  "插 sfx", self._ins_sfx, 11)
+        self.b_sndbgm = ui.Button(pygame.Rect(cx + (bw + 4) * 2, y, bw, 24),
+                                  "插 bgm", self._ins_bgm, 11)
+        y += 30
+
+        stories = L.list_stories()
+        if stories:
+            names = [os.path.splitext(s)[0] for s in stories]
+            self.c_story = ui.Choice(row(26), "剧情", stories, 0, None, names)
+            self.b_story = ui.Button(pygame.Rect(cx, y, cw, 24),
+                                     "载入剧情文件", self._load_story, 11)
+            y += 30
+
+        self.prop_content_h = max(0, y - body.y)
+        self.prop_scroll = max(0, min(self.prop_scroll, self.max_prop_scroll()))
 
     # -------------------------------------------------- 滚动
-    def max_scroll(self) -> int:
-        return max(0, self.content_h - self.body.h)
+    def max_left_scroll(self) -> int:
+        return max(0, getattr(self, "left_content_h", 0) - self.body.h)
 
-    def _top_set(self) -> set:
-        return set(getattr(self, "_top_widgets", []))
+    def max_prop_scroll(self) -> int:
+        return max(0, getattr(self, "prop_content_h", 0) - self.prop_body.h)
 
     def _body_widgets(self) -> list:
-        """属于右侧面板、随滚动平移的控件（不含顶栏与分页按钮）。"""
-        top = self._top_set()
-        out = [w for w in self.clicks
-               if w not in top and w not in self.tab_buttons
-               and getattr(w, "rect", None) is not None]
-        out += [w for w in self.inputs if w not in top
-                and getattr(w, "rect", None) is not None]
-        return out
+        """左侧分页中随纵向滚动的控件。"""
+        return [wi for wi in self.left_widgets
+                if getattr(wi, "rect", None) is not None]
+
+    def _prop_widgets(self) -> list:
+        """右侧事件属性栏中随纵向滚动的控件。"""
+        return [wi for wi in self.prop_widgets
+                if getattr(wi, "rect", None) is not None]
 
     @staticmethod
     def _shift(wi, dy: int):
@@ -569,6 +693,13 @@ class EditorScene:
 
     def _label(self, x, y, s, size=12, color=S.DIM2):
         self._labels.append(ui.Label(pygame.Rect(x, y, 10, 10), s, size, color))
+
+    def _prop_label(self, x, y, s, size=12, color=S.DIM2, bold=False):
+        self._prop_labels.append(
+            ui.Label(pygame.Rect(x, y, 10, 10), s, size, color, bold))
+
+    def _toggle_help(self):
+        self.help_open = not self.help_open
 
     # ============================================================ 形状
     def _shapes(self) -> list:
@@ -703,40 +834,47 @@ class EditorScene:
         return self.level.ensure_events_list()
 
     def _pick_event(self, i):
-        self._sync_event()
+        self._sync()
         self.cur_event_i = int(i)
         self._build()
 
     def _new_event(self):
-        self._sync_event()
+        self._sync()
         evs = self._events()
         evs.append({"trigger": "on_lock", "param": None, "script": "",
                     "mode": "ambient", "once": True})
         self.cur_event_i = len(evs) - 1
+        self.tab = TAB_EVENT
+        self.scroll = 0
         self._build()
         self._flash(f"已新增第 {len(evs)} 条事件")
 
     def _dup_event(self):
-        self._sync_event()
+        self._sync()
         evs = self._events()
         if not (0 <= self.cur_event_i < len(evs)):
+            self._flash("没有可复制的事件")
             return
         evs.append(copy.deepcopy(evs[self.cur_event_i]))
         self.cur_event_i = len(evs) - 1
+        self.tab = TAB_EVENT
         self._build()
         self._flash("已复制当前事件")
 
     def _del_event(self):
+        self._sync()
         evs = self._events()
         if not (0 <= self.cur_event_i < len(evs)):
+            self._flash("没有可删除的事件")
             return
         evs.pop(self.cur_event_i)
         self.cur_event_i = max(0, min(self.cur_event_i, len(evs) - 1))
+        self.tab = TAB_EVENT
         self._build()
         self._flash("已删除该事件")
 
     def _change_trigger(self, value):
-        self._sync_event()
+        self._sync()
         evs = self._events()
         if not (0 <= self.cur_event_i < len(evs)):
             return
@@ -925,8 +1063,19 @@ class EditorScene:
         audio.play(resolve_sfx(name))
         self._flash("播放：" + name)
 
-    def _insert_cmd(self, cmd: str) -> None:
+    def _ensure_script_editor(self):
+        """右侧助手插入指令时，确保左侧「剧本」页的脚本框已经打开。"""
         ta = getattr(self, "ta", None)
+        if ta is not None:
+            return ta
+        self._sync()
+        self.tab = TAB_EVENT
+        self.scroll = 0
+        self._build()
+        return getattr(self, "ta", None)
+
+    def _insert_cmd(self, cmd: str, ta=None) -> None:
+        ta = ta if ta is not None else self._ensure_script_editor()
         if ta is None:
             return
         line = ta.lines[ta.row].rstrip()
@@ -941,28 +1090,35 @@ class EditorScene:
     def _ins_sfx(self):
         name = getattr(self, "c_snd", None)
         if name:
-            self._insert_cmd("sfx " + name.value)
+            value = name.value
+            self._insert_cmd("sfx " + value)
 
     def _ins_bgm(self):
         name = getattr(self, "c_snd", None)
         if name:
-            self._insert_cmd("bgm " + name.value)
+            value = name.value
+            self._insert_cmd("bgm " + value)
 
     def _ins_drop(self):
         kind = getattr(self, "c_dkind", None)
         col = getattr(self, "st_dcol", None)
         if kind is None or col is None:
             return
-        self._insert_cmd(f"drop {kind.value} {int(col.value)}")
+        k, c = kind.value, int(col.value)
+        self._insert_cmd(f"drop {k} {c}")
 
     def _load_story(self):
-        if not hasattr(self, "c_story") or not hasattr(self, "ta"):
+        story = getattr(self, "c_story", None)
+        if story is None:
             return
-        path = self.c_story.value
+        path = story.value
         text = L.load_story(os.path.splitext(path)[0])
-        cur = self.ta.get().strip()
-        self.ta.set((cur + "\n" if cur else "") + text.strip())
-        self.focus = self.ta
+        ta = self._ensure_script_editor()
+        if ta is None:
+            return
+        cur = ta.get().strip()
+        ta.set((cur + "\n" if cur else "") + text.strip())
+        self.focus = ta
         self.message = f"已载入 {path}"
         self.message_life = 2.0
 
@@ -1103,6 +1259,7 @@ class EditorScene:
         self.cur_shape = 0
         self.cur_event_i = 0
         self.scroll = 0
+        self.prop_scroll = 0
         _a0 = getattr(self.app, "audio", None)
         if _a0:
             _a0.set_level_dir(L.level_root(lv))
@@ -1215,21 +1372,41 @@ class EditorScene:
             self._flash(f"操作出错（已忽略）：{type(exc).__name__}: {exc}")
 
     def _handle(self, ev):
-        mouse = pygame.mouse.get_pos()
         w, h = self.app.screen.get_size()
         rt = self._rects(w, h)
 
         if ev.type == pygame.MOUSEBUTTONDOWN:
-            if ev.button == 3:
-                self.brush = CH_EMPTY
+            if ev.button in (2, 4, 5):      # 中键与旧式滚轮按键（4/5）一律不响应
                 return
+            if self.help_open:
+                self.help_open = False
+                return
+            if ev.button == 1 and self._start_scroll_drag(ev.pos):
+                return
+            if self.menubar.handle_click(ev.pos):
+                return
+            if ev.button == 3:
+                if rt["stage"].collidepoint(ev.pos):
+                    self.painting = True
+                    self.paint_button = 3
+                    self._paint(ev.pos, rt["stage"])
+                else:
+                    self.brush = CH_EMPTY
+                    self._flash("已切换为擦除：在舞台拖动即可清除地形")
+                return
+            # 中央画布底部的画笔条
+            for r, ch in self.brush_rects:
+                if r.collidepoint(ev.pos):
+                    self.brush = ch
+                    return
             handled = False
-            # 顶栏与分页按钮：绝对坐标
-            for wi in list(self._top_widgets) + list(self.tab_buttons):
+            # 固定位置的控件（试演、关卡信息、左侧标签）
+            chrome = [self.b_test] + self.meta_widgets + self.tab_buttons
+            for wi in chrome:
                 if hasattr(wi, "handle_click") and wi.handle_click(ev.pos):
                     handled = True
                     break
-            # 面板内容：跟随滚动平移
+            # 左侧分页内容：跟随左侧滚动
             if not handled:
                 local = (ev.pos[0], ev.pos[1] + self.scroll)
                 for wi in self._body_widgets():
@@ -1238,39 +1415,66 @@ class EditorScene:
                         if isinstance(wi, (ui.Toggle, ui.Choice, ui.Stepper)):
                             self._after_widget(wi)
                         break
+            # 右侧事件属性：跟随右侧滚动
+            if not handled:
+                local = (ev.pos[0], ev.pos[1] + self.prop_scroll)
+                for wi in self._prop_widgets():
+                    if hasattr(wi, "handle_click") and wi.handle_click(local):
+                        handled = True
+                        if isinstance(wi, (ui.Toggle, ui.Choice, ui.Stepper)):
+                            self._after_widget(wi)
+                        break
             if handled:
                 self._set_focus_widget(ev.pos)
                 return
-            # 画布绘制
-            if rt["canvas"].collidepoint(ev.pos):
+            # 舞台地形绘制
+            if rt["stage"].collidepoint(ev.pos):
                 mods = pygame.key.get_mods()
                 if mods & pygame.KMOD_SHIFT:
-                    self._set_spawn_cell(ev.pos, rt["canvas"])
+                    self._set_spawn_cell(ev.pos, rt["stage"])
                     return
                 self.painting = True
                 self.paint_button = ev.button
-                self._paint(ev.pos, rt["canvas"])
-                self._set_focus_widget(ev.pos)
-                return
+                self._paint(ev.pos, rt["stage"])
             self._set_focus_widget(ev.pos)
             return
 
         if ev.type == pygame.MOUSEBUTTONUP:
+            if self._drag_scroll:
+                self._drag_scroll = None
+                return
+            if ev.button in (2, 4, 5):
+                return
             self.painting = False
             return
 
         if ev.type == pygame.MOUSEWHEEL:
-            self.scroll = max(0, min(self.max_scroll(), self.scroll - ev.y * 34))
+            # pygame 2 的滚轮事件不带 pos，用实时鼠标位置判定；滚轮绝不触发任何点击/绘制
+            mouse = pygame.mouse.get_pos()
+            ta = getattr(self, "ta", None)
+            if (self.tab == TAB_EVENT and ta is not None
+                    and (ta.rect.collidepoint(mouse) or self.focus is ta)):
+                ta.scroll_by(-ev.y * 2)
             return
 
         if ev.type == pygame.MOUSEMOTION:
-            self.hover_cell = self._cell_at(ev.pos, rt["canvas"])
-            if self.painting and rt["canvas"].collidepoint(ev.pos):
-                self._paint(ev.pos, rt["canvas"])
+            if self._drag_scroll:
+                self._move_scroll_drag(ev.pos[1])
+                return
+            self.hover_cell = self._cell_at(ev.pos, rt["stage"])
+            if self.painting and rt["stage"].collidepoint(ev.pos):
+                self._paint(ev.pos, rt["stage"])
             return
 
         if ev.type == pygame.KEYDOWN:
             mods = pygame.key.get_mods()
+            if self.help_open:
+                if ev.key in (pygame.K_ESCAPE, pygame.K_F1):
+                    self.help_open = False
+                return
+            if ev.key == pygame.K_ESCAPE and self.menubar.open is not None:
+                self.menubar.close()
+                return
             if mods & pygame.KMOD_CTRL:
                 if ev.key == pygame.K_s:
                     self.save()
@@ -1285,8 +1489,7 @@ class EditorScene:
                 self._set_tab((self.tab + 1) % len(TABS))
                 return
             if ev.key == pygame.K_F1:
-                self.focus = None
-                pygame.key.stop_text_input()
+                self._toggle_help()
                 return
         # 文本输入
         if getattr(self, "focus", None) is not None:
@@ -1294,9 +1497,14 @@ class EditorScene:
 
     def _set_focus_widget(self, pos):
         new = None
-        top = self._top_set()
+        prop_set = set(self.prop_widgets)
         for wi in self.inputs:
-            r = wi.rect if wi in top else wi.rect.move(0, -self.scroll)
+            if wi in self.meta_widgets:
+                r = wi.rect
+            elif wi in prop_set:
+                r = wi.rect.move(0, -self.prop_scroll)
+            else:
+                r = wi.rect.move(0, -self.scroll)
             if r.collidepoint(pos):
                 new = wi
         old = getattr(self, "focus", None)
@@ -1313,12 +1521,11 @@ class EditorScene:
     def _after_widget(self, wi):
         if wi is getattr(self, "sw", None) or wi is getattr(self, "sh", None):
             self._resize_stage()
-        if wi is getattr(self, "c_goal", None):
-            pass
 
     def update(self, dt):
         self.t += dt
-        self.scroll = max(0, min(self.max_scroll(), self.scroll))
+        self.scroll = max(0, min(self.max_left_scroll(), self.scroll))
+        self.prop_scroll = max(0, min(self.max_prop_scroll(), self.prop_scroll))
         if self.message_life > 0:
             self.message_life -= dt
 
@@ -1376,40 +1583,22 @@ class EditorScene:
         mouse = pygame.mouse.get_pos()
         surf.fill(S.BG)
 
-        # 顶部
-        for wi in (self.in_id, self.in_title, self.in_sub, self.in_author):
-            wi.draw(surf, mouse)
-        for b in (self.b_save, self.b_saveas, self.b_load, self.b_import,
-                  self.b_export, self.b_test, self.b_back):
+        # 左栏：标签页组 + 关卡信息 + 当前页内容
+        S.panel(surf, rt["left"], S.PANEL, S.LINE, 10)
+        for b in self.tab_buttons:
             b.draw(surf, mouse)
-        S.draw_text(surf, "演出编辑器", (rt["top"].x - 2, 6), 13, S.DIM2, True)
+        for wi in self.meta_widgets:
+            wi.draw(surf, mouse)
+        self._draw_scrolled(surf, self.body, self._labels, self._body_widgets(),
+                            self.scroll, mouse)
+        self._draw_scrollbar(surf, self.body, self.scroll,
+                             getattr(self, "left_content_h", 0))
 
-        # 调色板
-        pal = rt["palette"]
-        S.panel(surf, pal, S.PANEL, S.LINE, 8)
-        x = pal.x + 8
-        for label, ch, color in PALETTE:
-            img = S.font(12).render(label, True, S.TEXT)
-            bwid = max(46, img.get_width() + 26)
-            r = pygame.Rect(x, pal.y + 6, bwid, pal.h - 12)
-            sel = (self.brush == ch)
-            S.round_rect(surf, r, S.blend(S.PANEL2, 1.3 if sel else 1.0), 6)
-            S.round_rect(surf, r, S.ACCENT if sel else S.LINE, 6, 1)
-            if color is not None:
-                sw = pygame.Rect(r.x + 6, r.centery - 6, 12, 12)
-                S.round_rect(surf, sw, color, 3)
-            surf.blit(img, (r.x + 22, r.centery - img.get_height() // 2))
-            if r.collidepoint(mouse) and pygame.mouse.get_pressed()[0]:
-                self.brush = ch
-            x += bwid + 6
-            if x + bwid > pal.right:
-                break
-        S.draw_text(surf, "右键 = 擦除", (x + 8, pal.centery), 11, S.DIM2, anchor="midleft")
-
-        # 画布
+        # 中央：游戏画面（地形预览）
         canvas = rt["canvas"]
         S.panel(surf, canvas, S.BG2, S.LINE, 10)
-        view, cell = self._view(canvas)
+        stage = rt["stage"]
+        view, cell = self._view(stage)
         fake = self._fake_core()
         R.draw_stage_bg(surf, fake, view, cell, self.t)
         R.draw_stage_blocks(surf, fake, view, cell, self.t)
@@ -1420,64 +1609,163 @@ class EditorScene:
             if self.stage.grid[r][self.spawn_col] != 0:
                 sr = max(0, r - 1)
                 break
-        mark = pygame.Rect(view.x + self.spawn_col * cell + 2, view.y + sr * cell + 2,
-                           cell - 4, cell - 4)
+        mark = pygame.Rect(view.x + self.spawn_col * cell + 2,
+                           view.y + sr * cell + 2, cell - 4, cell - 4)
         S.round_rect(surf, mark, S.GOOD, 4, 2)
-        S.draw_text(surf, "出生", (mark.centerx, mark.centery), max(9, int(cell * 0.34)),
-                    (10, 20, 14), True, anchor="center")
+        S.draw_text(surf, "出生", (mark.centerx, mark.centery),
+                    max(9, int(cell * 0.34)), (10, 20, 14), True, anchor="center")
 
-        # 悬停格
-        if self.hover_cell and canvas.collidepoint(mouse):
+        if self.hover_cell and stage.collidepoint(mouse):
             c, r = self.hover_cell
             hr = pygame.Rect(view.x + c * cell, view.y + r * cell, cell, cell)
             pygame.draw.rect(surf, S.ACCENT, hr, 2, border_radius=3)
+        self._draw_palette(surf, rt["palette"], mouse)
 
-        # 右侧
-        r = rt["right"]
-        S.panel(surf, r, S.PANEL, S.LINE, 10)
-        for b in self.tab_buttons:
-            b.draw(surf, mouse)
+        # 右栏：常驻事件属性
+        right = rt["right"]
+        S.panel(surf, right, S.PANEL, S.LINE, 10)
+        S.draw_text(surf, "事件属性", (right.x + 10, right.y + 8),
+                    13, S.ACCENT, True)
+        if 0 <= self.cur_event_i < len(self._events()):
+            S.draw_text(surf, f"#{self.cur_event_i + 1}", (right.right - 10, right.y + 8),
+                        11, S.DIM2, anchor="midright")
+        self._draw_scrolled(surf, self.prop_body, self._prop_labels,
+                            self._prop_widgets(), self.prop_scroll, mouse)
+        self._draw_scrollbar(surf, self.prop_body, self.prop_scroll,
+                             getattr(self, "prop_content_h", 0))
 
-        # 面板内容（可滚动，超出部分裁剪）
-        dy = self.scroll
-        old_clip = surf.get_clip()
-        surf.set_clip(self.body)
-        local_mouse = (mouse[0], mouse[1] + dy)
-        for lbl in self._labels:
-            saved = self._shift(lbl, dy)
-            lbl.draw(surf, local_mouse)
-            self._unshift(lbl, saved)
-        for wi in self._body_widgets():
-            saved = self._shift(wi, dy)
-            wi.draw(surf, local_mouse)
-            self._unshift(wi, saved)
-        surf.set_clip(old_clip)
-        self._draw_scrollbar(surf)
+        # 顶部：菜单与试演（最后绘制，确保下拉层在最上层）
+        self.b_test.draw(surf, mouse)
+        self.menubar.draw(surf, mouse)
 
         if self.message_life > 0 and self.message:
-            img = S.font(13, True).render(self.message, True, S.GOOD)
+            img = S.font(12, True).render(self.message, True, S.GOOD)
             tw = img.get_width() + 20
-            bg = pygame.Rect(canvas.centerx - tw // 2, canvas.bottom + 6, tw, 26)
+            bg = pygame.Rect(canvas.centerx - tw // 2, canvas.y + 10, tw, 24)
             S.round_rect(surf, bg, S.PANEL2, 8)
             S.round_rect(surf, bg, S.GOOD, 8, 1)
             surf.blit(img, (bg.x + 10, bg.centery - img.get_height() // 2))
 
-        ui.draw_hint_bar(surf, pygame.Rect(16, h - 30, max(200, r.x - 40), 22), [
+        ui.draw_hint_bar(surf, pygame.Rect(8, h - 26, w - 16, 20), [
             ("Ctrl+S", "保存"), ("Ctrl+E", "试演"), ("Tab", "切换分页"),
             ("右键", "擦除"), ("Shift+点击", "出生列"), ("Esc", "返回"),
-        ], 11)
+            ("F1", "帮助"),
+        ], 10)
 
-    def _draw_scrollbar(self, surf) -> None:
-        mx = self.max_scroll()
-        if mx <= 0:
+        if self.help_open:
+            self._draw_help(surf, w, h)
+
+    def _draw_scrolled(self, surf, body, labels, widgets, dy, mouse):
+        old_clip = surf.get_clip()
+        surf.set_clip(body)
+        local_mouse = (mouse[0], mouse[1] + dy)
+        for lbl in labels:
+            saved = self._shift(lbl, dy)
+            lbl.draw(surf, local_mouse)
+            self._unshift(lbl, saved)
+        for wi in widgets:
+            saved = self._shift(wi, dy)
+            wi.draw(surf, local_mouse)
+            self._unshift(wi, saved)
+        surf.set_clip(old_clip)
+
+    def _draw_palette(self, surf, pal, mouse):
+        S.panel(surf, pal, S.PANEL2, S.LINE, 7)
+        self.brush_rects = []
+        n = max(1, len(PALETTE))
+        bw = max(30, min(54, (pal.w - 16) // n - 4))
+        x = pal.x + 6
+        for label, ch, color in PALETTE:
+            r = pygame.Rect(x, pal.y + 5, bw, pal.h - 10)
+            self.brush_rects.append((r, ch))
+            sel = self.brush == ch
+            S.round_rect(surf, r, S.blend(S.PANEL3, 1.35 if sel else 1.0), 5)
+            S.round_rect(surf, r, S.ACCENT if sel else S.LINE, 5, 1)
+            if color is not None:
+                sw = pygame.Rect(r.x + 5, r.centery - 5, 10, 10)
+                S.round_rect(surf, sw, color, 3)
+                tx = r.x + 18
+            else:
+                tx = r.x + 6
+            if bw >= 40:
+                S.draw_text(surf, label, (tx, r.centery), 10,
+                            S.TEXT if sel else S.DIM, sel, anchor="midleft")
+            elif r.collidepoint(mouse):
+                S.draw_text(surf, label, (r.centerx, r.centery), 10,
+                            S.TEXT, True, anchor="center")
+            x += bw + 4
+        if x + 66 < pal.right:
+            S.draw_text(surf, "右键擦除", (x + 4, pal.centery), 10, S.DIM2,
+                        anchor="midleft")
+
+    def _draw_help(self, surf, w, h):
+        bw, bh = min(620, w - 40), 178
+        rect = pygame.Rect(w // 2 - bw // 2, h // 2 - bh // 2, bw, bh)
+        ov = pygame.Surface((w, h), pygame.SRCALPHA)
+        ov.fill((6, 8, 14, 150))
+        surf.blit(ov, (0, 0))
+        S.panel(surf, rect, S.PANEL, S.ACCENT, 12)
+        S.draw_text(surf, "快捷键与布局说明", (rect.x + 18, rect.y + 16),
+                    18, S.TEXT, True)
+        y = rect.y + 54
+        for line in HELP_LINES:
+            S.draw_text(surf, line, (rect.x + 18, y), 12, S.DIM)
+            y += 24
+        S.draw_text(surf, "点击任意处或按 F1 / Esc 关闭",
+                    (rect.centerx, rect.bottom - 18), 11, S.DIM2, anchor="midbottom")
+
+    def _start_scroll_drag(self, pos) -> bool:
+        """左键点在滚动条上时开始拖动，返回是否命中。"""
+        panels = (
+            ("left", getattr(self, "body", None), self.scroll, "left_content_h"),
+            ("right", getattr(self, "prop_body", None), self.prop_scroll,
+             "prop_content_h"),
+        )
+        for which, body, cur, key in panels:
+            if body is None:
+                continue
+            content_h = getattr(self, key, 0)
+            geom = self._scrollbar_geom(body, cur, content_h)
+            if geom and geom[0].collidepoint(pos):
+                self._drag_scroll = (which, pos[1] - geom[1].y, body, content_h)
+                return True
+        return False
+
+    def _move_scroll_drag(self, y) -> None:
+        which, grab, body, content_h = self._drag_scroll
+        cur = self.scroll if which == "left" else self.prop_scroll
+        geom = self._scrollbar_geom(body, cur, content_h)
+        if not geom:
             return
-        body = self.body
+        _hit, thumb, track, mx = geom
+        span = max(1, track.h - thumb.h)
+        frac = max(0.0, min(1.0, (y - grab - track.y) / span))
+        val = max(0, min(mx, int(frac * mx + 0.5)))
+        if which == "left":
+            self.scroll = val
+        else:
+            self.prop_scroll = val
+
+    def _scrollbar_geom(self, body, scroll, content_h):
+        """返回 (命中区, 滑块, 轨道, 最大滚动量)；无内容溢出时返回 None。"""
+        mx = max(0, content_h - body.h)
+        if mx <= 0:
+            return None
         track = pygame.Rect(body.right - 5, body.y + 2, 4, body.h - 4)
-        S.round_rect(surf, track, S.PANEL3, 2)
         k = body.h / (body.h + mx)
         th = max(24, int(track.h * k))
-        ty = track.y + int((track.h - th) * (self.scroll / mx))
-        S.round_rect(surf, pygame.Rect(track.x, ty, track.w, th), S.ACCENT, 2)
+        ty = track.y + int((track.h - th) * (scroll / mx))
+        thumb = pygame.Rect(track.x, ty, track.w, th)
+        hit = pygame.Rect(track.x - 5, track.y - 2, track.w + 10, track.h + 4)
+        return hit, thumb, track, mx
+
+    def _draw_scrollbar(self, surf, body, scroll, content_h) -> None:
+        geom = self._scrollbar_geom(body, scroll, content_h)
+        if geom is None:
+            return
+        _hit, thumb, track, _mx = geom
+        S.round_rect(surf, track, S.PANEL3, 2)
+        S.round_rect(surf, thumb, S.ACCENT, 2)
 
     def _fake_core(self):
         """给 render 用的轻量替身，仅含 level / stage 字段。"""

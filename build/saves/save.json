@@ -1,12 +1,12 @@
 {
   "version": 1,
   "created": 0,
-  "last_level": "line_clear",
+  "last_level": "tutorial",
   "levels": {
     "tutorial": {
       "cleared": false,
       "best_row": 11,
-      "attempts": 1,
+      "attempts": 2,
       "clears": 0,
       "best_ms": null
     },
