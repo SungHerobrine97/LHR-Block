@@ -36,7 +36,7 @@ python main.py
 
 如果无法访问GIthub或者Github下载慢：
 
-可以前往[托管的永恒E盘](https://mixerwangdev.ysepan.com/)下载文件，访问密码为`114514`。（感谢`fogota`）
+可以前往[托管的永恒E盘](https://mixerwangdev.ysepan.com/)下载文件，访问密码为`114514`。
 
 ## 目标
 
@@ -61,6 +61,17 @@ python main.py
 ## 许可
 
 本项目的许可条款和合规性声明可以在[这里](LICENSE.md)找到。
+
+## 引用作品和鸣谢
+
+- fogota
+- FenrisWolf（游戏原型的名字被抹去）
+- [永恒E盘](http://www.ys168.com?id=12670)（用于云盘存储）
+- WorkBuddy
+- Wuthering Waves
+- Neverness to everness
+- Tetris
+- Figma
 
 ## 备忘
 
