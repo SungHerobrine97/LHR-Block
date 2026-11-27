@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 
 from . import settings as S
 from .stage import Stage, touching
@@ -182,11 +183,28 @@ class Actor:
                 return
 
     def is_buried(self) -> bool:
-        """四周（含边界与墙壁）全被堵死。"""
-        x, y = self.x, self.y
-        return (
-            touching(self.stage, x - 0.06, y, W, H)
-            and touching(self.stage, x + 0.06, y, W, H)
-            and touching(self.stage, x, y - 0.06, W, H)
-            and touching(self.stage, x, y + 0.06, W, H)
-        )
+        """小人是否处在封闭空间内（墙壁、固化方块、边界都算封闭）。
+
+        不能只看当前格的四邻格：那只能识别 1 格大小的陷阱。方块常常围出
+        一个 2~3 格的小空腔，小人还能在里面左右挪动，但已经没有通往舞台
+        上方的路，这种也应算封困。因此从身体所在格做一次洪泛，只要整片
+        连通空腔都被实心格/边界包住，就判定为封困。舞台上方（r < 0）是
+        开放出口，能到达即不算封困。
+        """
+        st = self.stage
+        start = self.tiles()
+        if not start:
+            return False
+        seen = set(start)
+        q = deque(start)
+        while q:
+            c, r = q.popleft()
+            for dc, dr in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nc, nr = c + dc, r + dr
+                if nr < 0:            # 舞台上方开放，小人可跳出
+                    return False
+                if (nc, nr) in seen or st.is_solid(nc, nr):
+                    continue
+                seen.add((nc, nr))
+                q.append((nc, nr))
+        return True
